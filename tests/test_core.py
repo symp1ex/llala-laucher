@@ -7,7 +7,9 @@ import sys
 import tempfile
 import time
 import unittest
+from unittest.mock import patch
 
+from app import LauncherApp
 from app_paths import resolve_app_paths
 from llama_server import (
     build_command,
@@ -16,9 +18,66 @@ from llama_server import (
     detect_supported_parameters,
 )
 from model_scanner import ModelInfo, ModelScanner, model_id_for_relative
-from parameter_specs import PARAMETER_SPECS
+from parameter_specs import PARAMETER_SPECS, SPEC_BY_KEY
 from preset_manager import PresetManager
 from server_process import LlamaServerProcess
+
+
+class ParameterSpecTests(unittest.TestCase):
+    def test_sampling_parameter_specs(self) -> None:
+        expected = {
+            "temperature": ("--temp", "float", 0.8, 0.0, 10.0),
+            "top_p": ("--top-p", "float", 0.95, 0.0, 1.0),
+            "top_k": ("--top-k", "int", 40, 0, 1_000_000),
+            "min_p": ("--min-p", "float", 0.05, 0.0, 1.0),
+            "repeat_penalty": ("--repeat-penalty", "float", 1.0, 0.0, 10.0),
+        }
+
+        for key, (cli, value_type, default, minimum, maximum) in expected.items():
+            with self.subTest(key=key):
+                spec = SPEC_BY_KEY[key]
+                self.assertEqual(spec.cli, cli)
+                self.assertEqual(spec.support_cli, cli)
+                self.assertEqual(spec.category, "Sampling")
+                self.assertEqual(spec.value_type, value_type)
+                self.assertEqual(spec.default, default)
+                self.assertFalse(spec.default_enabled)
+                self.assertEqual(spec.min_value, minimum)
+                self.assertEqual(spec.max_value, maximum)
+
+    def test_required_research_controls_are_present_without_duplicates(self) -> None:
+        required = {
+            "ctx_size",
+            "parallel",
+            "flash_attn",
+            "cache_type_k",
+            "cache_type_v",
+            "gpu_layers",
+            "fit",
+            "cpu_moe",
+            "n_cpu_moe",
+            "override_tensor",
+            "threads",
+            "threads_batch",
+            "batch_size",
+            "ubatch_size",
+            "device",
+            "main_gpu",
+            "split_mode",
+            "tensor_split",
+            "load_mode",
+            "no_kv_offload",
+            "swa_full",
+            "temperature",
+            "top_p",
+            "top_k",
+            "min_p",
+            "repeat_penalty",
+        }
+        keys = [spec.key for spec in PARAMETER_SPECS]
+
+        self.assertEqual(len(keys), len(set(keys)))
+        self.assertEqual(required - set(keys), set())
 
 
 class ModelScannerTests(unittest.TestCase):
@@ -70,6 +129,27 @@ class PresetTests(unittest.TestCase):
             loaded = manager.load(saved)
             self.assertEqual(loaded["parameters"]["port"]["value"], 8080)
             self.assertIn("future_option", loaded["parameters"])
+
+    def test_qwen3_coder_next_baseline_loads_without_unknown_parameters(self) -> None:
+        repository = Path(__file__).resolve().parents[1]
+        relative_path = Path("Qwen3-Coder-Next-MXFP4_MOE.gguf")
+        model = ModelInfo(
+            repository / "llama" / "models" / relative_path,
+            relative_path,
+            relative_path.as_posix(),
+            model_id_for_relative(relative_path),
+        )
+        manager = PresetManager(repository / "llama" / "preset")
+        preset_path = manager.path_for_name(model, "qwen3-coder-next-mxfp4-baseline")
+
+        app = LauncherApp.__new__(LauncherApp)
+        app.preset_manager = manager
+        state, warnings, document = app._preset_parameter_state(preset_path)
+
+        self.assertEqual(warnings, [])
+        self.assertEqual(set(document["parameters"]) - set(SPEC_BY_KEY), set())
+        self.assertFalse(state["min_p"]["enabled"])
+        self.assertFalse(state["repeat_penalty"]["enabled"])
 
 
 class CommandTests(unittest.TestCase):
@@ -129,6 +209,104 @@ class CommandTests(unittest.TestCase):
                     "--jinja",
                 ],
             )
+
+    def test_sampling_parameters_build_expected_argv(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            server, model = self._files(root)
+            state = default_parameter_state(safe_profile=False)
+            state["temperature"] = {"enabled": True, "value": 1.0}
+            state["top_p"] = {"enabled": True, "value": 0.95}
+            state["top_k"] = {"enabled": True, "value": 40}
+            state["min_p"] = {"enabled": False, "value": 0.05}
+            state["repeat_penalty"] = {"enabled": False, "value": 1.0}
+
+            command = build_command(server, model, state)
+
+            self.assertEqual(
+                command,
+                [
+                    str(server),
+                    "-m",
+                    str(model),
+                    "--temp",
+                    "1.0",
+                    "--top-p",
+                    "0.95",
+                    "--top-k",
+                    "40",
+                ],
+            )
+            self.assertNotIn("--min-p", command)
+            self.assertNotIn("--repeat-penalty", command)
+
+    def test_qwen3_coder_next_baseline_builds_equivalent_argv(self) -> None:
+        repository = Path(__file__).resolve().parents[1]
+        relative_path = Path("Qwen3-Coder-Next-MXFP4_MOE.gguf")
+        model_info = ModelInfo(
+            repository / "llama" / "models" / relative_path,
+            relative_path,
+            relative_path.as_posix(),
+            model_id_for_relative(relative_path),
+        )
+        manager = PresetManager(repository / "llama" / "preset")
+        preset_path = manager.path_for_name(model_info, "qwen3-coder-next-mxfp4-baseline")
+        preset = manager.load(preset_path)
+
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            server, model = self._files(root)
+            command = build_command(server, model, preset["parameters"])
+
+            self.assertEqual(
+                command,
+                [
+                    str(server),
+                    "-m",
+                    str(model),
+                    "--alias",
+                    "qwen3-coder-next",
+                    "--host",
+                    "127.0.0.1",
+                    "--port",
+                    "8080",
+                    "-c",
+                    "32768",
+                    "-np",
+                    "1",
+                    "--flash-attn",
+                    "on",
+                    "-ctk",
+                    "q8_0",
+                    "-ctv",
+                    "q8_0",
+                    "--jinja",
+                    "--fit",
+                    "on",
+                    "--temp",
+                    "1.0",
+                    "--top-p",
+                    "0.95",
+                    "--top-k",
+                    "40",
+                ],
+            )
+
+    def test_sampling_capability_detection_uses_each_support_switch(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            server = Path(temporary) / "llama-server.exe"
+            server.touch()
+            help_text = "--temp --top-p --top-k --repeat-penalty"
+            with patch("llama_server.subprocess.run") as run:
+                run.return_value.stdout = help_text
+                result = detect_supported_parameters(server)
+
+            self.assertIsNone(result.error)
+            self.assertIn("temperature", result.supported_keys or ())
+            self.assertIn("top_p", result.supported_keys or ())
+            self.assertIn("top_k", result.supported_keys or ())
+            self.assertIn("repeat_penalty", result.supported_keys or ())
+            self.assertNotIn("min_p", result.supported_keys or ())
 
     def test_missing_server_detection_is_non_fatal(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:

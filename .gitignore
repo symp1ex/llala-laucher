@@ -35,6 +35,7 @@ __pycache__/
 .venv/
 logs/
 date/
+llama/
 updater/
 bin/
 _problems/

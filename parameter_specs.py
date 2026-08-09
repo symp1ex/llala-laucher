@@ -49,6 +49,11 @@ PARAMETER_SPECS: tuple[ParameterSpec, ...] = (
     ParameterSpec("tensor_split", "--tensor-split", "--tensor-split", "Tensor split", "Memory / GPU", "text", "", tooltip="Per-GPU proportions, for example 3,1. Leave disabled on one GPU."),
     ParameterSpec("load_mode", "--load-mode", "--load-mode", "Load mode", "Memory / GPU", "choice", "mmap", choices=("none", "mmap", "mlock", "mmap+mlock", "dio"), tooltip="Modern model-loading mode. mmap is the normal default."),
     ParameterSpec("fit", "--fit", "--fit", "Fit to VRAM", "Memory / GPU", "choice", "on", choices=("on", "off"), tooltip="Allow current llama.cpp builds to adjust unset arguments to device memory."),
+    ParameterSpec("temperature", "--temp", "--temp", "Temperature", "Sampling", "float", 0.8, False, min_value=0.0, max_value=10.0, tooltip="Controls randomness in the token distribution; higher values produce more varied output."),
+    ParameterSpec("top_p", "--top-p", "--top-p", "Top P", "Sampling", "float", 0.95, False, min_value=0.0, max_value=1.0, tooltip="Limits sampling to the smallest token set whose cumulative probability reaches this value."),
+    ParameterSpec("top_k", "--top-k", "--top-k", "Top K", "Sampling", "int", 40, False, min_value=0, max_value=1_000_000, tooltip="Limits sampling to the K most probable tokens; 0 disables top-k filtering."),
+    ParameterSpec("min_p", "--min-p", "--min-p", "Min P", "Sampling", "float", 0.05, False, min_value=0.0, max_value=1.0, tooltip="Filters tokens below a probability threshold relative to the most likely token; 0 disables it."),
+    ParameterSpec("repeat_penalty", "--repeat-penalty", "--repeat-penalty", "Repeat penalty", "Sampling", "float", 1.0, False, min_value=0.0, max_value=10.0, tooltip="Penalizes repeated tokens; 1.0 disables the penalty, while higher values discourage repetition."),
     ParameterSpec("no_mmap", "--no-mmap", "--no-mmap", "Disable mmap", "Memory / GPU", "bool", True, tooltip="Avoid memory mapping. Usually slower; deprecated in favor of --load-mode."),
     ParameterSpec("mlock", "--mlock", "--mlock", "Lock model in RAM", "Memory / GPU", "bool", True, tooltip="Prevent model memory from being swapped; may fail without enough RAM."),
     ParameterSpec("numa", "--numa", "--numa", "NUMA mode", "Memory / GPU", "choice", "distribute", choices=("distribute", "isolate", "numactl"), tooltip="NUMA policy for multi-socket systems. Leave disabled on typical PCs."),
@@ -72,6 +77,7 @@ PARAMETER_SPECS: tuple[ParameterSpec, ...] = (
 SPEC_BY_KEY = {spec.key: spec for spec in PARAMETER_SPECS}
 CATEGORIES = (
     "General",
+    "Sampling",
     "Memory / GPU",
     "Context / KV cache",
     "MoE",
