@@ -1,0 +1,46 @@
+{
+  "schema_version": 1,
+  "name": "original-bat",
+  "description": "Imported from the original BAT launcher configuration.",
+  "model": {
+    "relative_path": "Qwen3.6-35B-A3B-Q4_K_M.gguf"
+  },
+  "parameters": {
+    "alias": {
+      "enabled": true,
+      "value": "qwen3.6-35b-a3b"
+    },
+    "host": {
+      "enabled": true,
+      "value": "127.0.0.1"
+    },
+    "port": {
+      "enabled": true,
+      "value": 8080
+    },
+    "ctx_size": {
+      "enabled": true,
+      "value": 262144
+    },
+    "parallel": {
+      "enabled": true,
+      "value": 1
+    },
+    "flash_attn": {
+      "enabled": true,
+      "value": "on"
+    },
+    "cache_type_k": {
+      "enabled": true,
+      "value": "q8_0"
+    },
+    "cache_type_v": {
+      "enabled": true,
+      "value": "q8_0"
+    },
+    "jinja": {
+      "enabled": true,
+      "value": true
+    }
+  }
+}

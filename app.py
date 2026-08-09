@@ -1,0 +1,518 @@
+"""tkinter application for configuring and running llama-server."""
+
+from __future__ import annotations
+
+import json
+from pathlib import Path
+import queue
+import threading
+import tkinter as tk
+from tkinter import messagebox, simpledialog, ttk
+import traceback
+from typing import Any, Mapping
+
+from app_paths import AppPaths
+from llama_server import (
+    CommandValidationError,
+    DetectionResult,
+    build_command,
+    default_parameter_state,
+    detect_supported_parameters,
+    format_windows_command,
+)
+from model_scanner import ModelInfo, ModelScanner
+from parameter_specs import CATEGORIES, PARAMETER_SPECS, SPEC_BY_KEY
+from preset_manager import PresetError, PresetManager
+from server_process import LlamaServerProcess
+from widgets import ParameterControl, ScrollableFrame, Tooltip
+
+
+class LauncherApp:
+    PREVIEW_DELAY_MS = 250
+
+    def __init__(self, root: tk.Tk, paths: AppPaths) -> None:
+        self.root = root
+        self.paths = paths
+        self.model_scanner = ModelScanner(paths.models)
+        self.preset_manager = PresetManager(paths.presets)
+        self.server_process = LlamaServerProcess()
+        self.background_events: queue.Queue[tuple[str, object]] = queue.Queue()
+        self.models_by_display: dict[str, ModelInfo] = {}
+        self.presets_by_display: dict[str, Path] = {}
+        self.parameter_controls: dict[str, ParameterControl] = {}
+        self.supported_keys: frozenset[str] | None = None
+        self.preview_after_id: str | None = None
+        self.closing = False
+        self.stopping = False
+        self.settings = self._load_settings()
+
+        self.root.title("llala-launcher")
+        self.root.minsize(900, 700)
+        try:
+            self.root.geometry(str(self.settings.get("window_geometry", "1120x860")))
+        except tk.TclError:
+            self.root.geometry("1120x860")
+        self.root.protocol("WM_DELETE_WINDOW", self._on_close)
+
+        self.server_status_var = tk.StringVar()
+        self.model_var = tk.StringVar()
+        self.preset_var = tk.StringVar()
+        self.use_preset_var = tk.BooleanVar(value=False)
+        self.run_status_var = tk.StringVar(value="Status: Stopped")
+        self.pid_var = tk.StringVar(value="PID: -")
+
+        self._build_ui()
+        self._update_server_status()
+        self._refresh_models(initial=True)
+        self._reset_parameters(safe_profile=True)
+        self._start_capability_detection()
+        self._update_buttons()
+        self._schedule_preview()
+        self.root.after(100, self._poll_events)
+
+    def _build_ui(self) -> None:
+        outer = ttk.Frame(self.root, padding=10)
+        outer.pack(fill="both", expand=True)
+
+        server_row = ttk.Frame(outer)
+        server_row.pack(fill="x", pady=(0, 7))
+        ttk.Label(server_row, textvariable=self.server_status_var).pack(side="left", fill="x", expand=True)
+        self.detect_button = ttk.Button(server_row, text="Recheck CLI", command=self._start_capability_detection)
+        self.detect_button.pack(side="right")
+
+        selection = ttk.LabelFrame(outer, text="Model and preset", padding=8)
+        selection.pack(fill="x", pady=(0, 8))
+        selection.columnconfigure(1, weight=1)
+
+        ttk.Label(selection, text="Model:").grid(row=0, column=0, sticky="w", padx=(0, 8))
+        self.model_combo = ttk.Combobox(selection, textvariable=self.model_var, state="readonly")
+        self.model_combo.grid(row=0, column=1, sticky="ew")
+        self.model_combo.bind("<<ComboboxSelected>>", self._on_model_selected)
+        ttk.Button(selection, text="Refresh models", command=self._refresh_models).grid(row=0, column=2, padx=(8, 0))
+
+        ttk.Label(selection, text="Preset:").grid(row=1, column=0, sticky="w", padx=(0, 8), pady=(7, 0))
+        self.preset_combo = ttk.Combobox(selection, textvariable=self.preset_var, state="readonly")
+        self.preset_combo.grid(row=1, column=1, sticky="ew", pady=(7, 0))
+        self.preset_combo.bind("<<ComboboxSelected>>", lambda _event: self._schedule_preview())
+        preset_buttons = ttk.Frame(selection)
+        preset_buttons.grid(row=1, column=2, sticky="e", padx=(8, 0), pady=(7, 0))
+        ttk.Button(preset_buttons, text="Refresh", command=self._refresh_presets).pack(side="left")
+        self.load_button = ttk.Button(preset_buttons, text="Load", command=self._load_selected_preset)
+        self.load_button.pack(side="left", padx=(5, 0))
+
+        notebook = ttk.Notebook(outer)
+        notebook.pack(fill="both", expand=True, pady=(0, 8))
+        category_frames: dict[str, ttk.Frame] = {}
+        for category in CATEGORIES:
+            scroller = ScrollableFrame(notebook)
+            notebook.add(scroller, text=category)
+            category_frames[category] = scroller.content
+
+        category_rows = {category: 0 for category in CATEGORIES}
+        for spec in PARAMETER_SPECS:
+            parent = category_frames[spec.category]
+            row = category_rows[spec.category]
+            control = ParameterControl(parent, spec, row, self._schedule_preview)
+            self.parameter_controls[spec.key] = control
+            category_rows[spec.category] += 1
+
+        preview_frame = ttk.LabelFrame(outer, text="Command preview", padding=6)
+        preview_frame.pack(fill="x", pady=(0, 8))
+        self.preview_text = tk.Text(preview_frame, height=7, wrap="none", font=("Consolas", 9))
+        preview_scroll = ttk.Scrollbar(preview_frame, orient="horizontal", command=self.preview_text.xview)
+        self.preview_text.configure(xscrollcommand=preview_scroll.set, state="disabled")
+        self.preview_text.pack(fill="x")
+        preview_scroll.pack(fill="x")
+
+        actions = ttk.Frame(outer)
+        actions.pack(fill="x", pady=(0, 8))
+        self.start_button = ttk.Button(actions, text="Start", command=self._start_server)
+        self.start_button.pack(side="left")
+        use_preset = ttk.Checkbutton(
+            actions,
+            text="Start using selected preset",
+            variable=self.use_preset_var,
+            command=self._schedule_preview,
+        )
+        use_preset.pack(side="left", padx=10)
+        Tooltip(use_preset, "Launch directly from the preset without replacing current UI values.")
+        self.stop_button = ttk.Button(actions, text="Stop", command=self._stop_server)
+        self.stop_button.pack(side="left")
+        self.save_button = ttk.Button(actions, text="Save preset", command=self._save_preset)
+        self.save_button.pack(side="left", padx=(10, 0))
+        ttk.Button(actions, text="Clear", command=self._clear).pack(side="left", padx=(5, 0))
+        ttk.Label(actions, textvariable=self.pid_var).pack(side="right", padx=(10, 0))
+        ttk.Label(actions, textvariable=self.run_status_var).pack(side="right")
+
+        output_frame = ttk.LabelFrame(outer, text="Server output", padding=6)
+        output_frame.pack(fill="both", expand=False)
+        self.output_text = tk.Text(output_frame, height=10, wrap="word", font=("Consolas", 9), state="disabled")
+        output_scroll = ttk.Scrollbar(output_frame, command=self.output_text.yview)
+        self.output_text.configure(yscrollcommand=output_scroll.set)
+        self.output_text.pack(side="left", fill="both", expand=True)
+        output_scroll.pack(side="right", fill="y")
+
+    def _load_settings(self) -> dict[str, Any]:
+        try:
+            with self.paths.settings.open("r", encoding="utf-8") as file:
+                data = json.load(file)
+            return data if isinstance(data, dict) else {}
+        except (OSError, json.JSONDecodeError):
+            return {}
+
+    def _save_settings(self) -> None:
+        model = self._selected_model()
+        data = {
+            "window_geometry": self.root.geometry(),
+            "last_model": model.relative_path.as_posix() if model else "",
+            "last_preset": self.preset_var.get(),
+        }
+        try:
+            with self.paths.settings.open("w", encoding="utf-8", newline="\n") as file:
+                json.dump(data, file, ensure_ascii=False, indent=2)
+                file.write("\n")
+        except OSError as exc:
+            self._append_log(f"Could not save launcher settings: {exc}")
+
+    def _update_server_status(self) -> None:
+        if self.paths.server.is_file():
+            fallback = " (temporary development fallback)" if self.paths.using_development_fallback else ""
+            self.server_status_var.set(f"llama-server.exe: found{fallback} — {self.paths.server}")
+        else:
+            self.server_status_var.set(f"llama-server.exe: NOT FOUND — expected {self.paths.server}")
+
+    def _refresh_models(self, initial: bool = False) -> None:
+        current = self._selected_model()
+        wanted = current.relative_path.as_posix() if current else str(self.settings.get("last_model", ""))
+        try:
+            models = self.model_scanner.scan()
+        except OSError as exc:
+            models = []
+            messagebox.showerror("Model scan failed", f"Could not scan models:\n{exc}")
+        self.models_by_display = {model.display_name: model for model in models}
+        values = list(self.models_by_display)
+        self.model_combo.configure(values=values)
+        selected = next(
+            (model.display_name for model in models if model.relative_path.as_posix() == wanted),
+            values[0] if values else "",
+        )
+        self.model_var.set(selected)
+        self._refresh_presets(initial=initial)
+        if not models and not initial:
+            self._append_log(f"No .gguf models found under {self.paths.models}")
+        self._update_buttons()
+        self._schedule_preview()
+
+    def _on_model_selected(self, _event: tk.Event[Any] | None = None) -> None:
+        self._refresh_presets()
+        self._update_buttons()
+        self._schedule_preview()
+
+    def _selected_model(self) -> ModelInfo | None:
+        return self.models_by_display.get(self.model_var.get())
+
+    def _refresh_presets(self, initial: bool = False) -> None:
+        model = self._selected_model()
+        current = self.preset_var.get()
+        wanted = current or (str(self.settings.get("last_preset", "")) if initial else "")
+        paths = self.preset_manager.scan(model) if model else []
+        self.presets_by_display = {path.stem: path for path in paths}
+        values = list(self.presets_by_display)
+        self.preset_combo.configure(values=values)
+        self.preset_var.set(wanted if wanted in self.presets_by_display else (values[0] if values else ""))
+        self.load_button.configure(state="normal" if values else "disabled")
+        self.save_button.configure(state="normal" if model else "disabled")
+        self._schedule_preview()
+
+    def _selected_preset(self) -> Path | None:
+        return self.presets_by_display.get(self.preset_var.get())
+
+    def _reset_parameters(self, safe_profile: bool) -> None:
+        state = default_parameter_state(safe_profile=safe_profile)
+        for key, control in self.parameter_controls.items():
+            control.set_state(state[key])
+        self._schedule_preview()
+
+    def _current_parameter_state(self) -> dict[str, dict[str, Any]]:
+        return {key: control.get_state() for key, control in self.parameter_controls.items()}
+
+    def _preset_parameter_state(
+        self,
+        path: Path,
+    ) -> tuple[dict[str, dict[str, Any]], list[str], dict[str, Any]]:
+        document = self.preset_manager.load(path)
+        raw_parameters = document["parameters"]
+        state = default_parameter_state(safe_profile=False)
+        warnings: list[str] = []
+        for key, raw_state in raw_parameters.items():
+            if key not in SPEC_BY_KEY:
+                warnings.append(f"Unknown preset parameter ignored: {key}")
+                continue
+            if not isinstance(raw_state, Mapping):
+                warnings.append(f"Malformed preset parameter ignored: {key}")
+                continue
+            state[key] = {
+                "enabled": bool(raw_state.get("enabled", False)),
+                "value": raw_state.get("value", SPEC_BY_KEY[key].default),
+            }
+        return state, warnings, document
+
+    def _state_for_command(self) -> tuple[dict[str, dict[str, Any]], list[str]]:
+        if not self.use_preset_var.get():
+            return self._current_parameter_state(), []
+        preset = self._selected_preset()
+        if preset is None or not preset.is_file():
+            raise CommandValidationError("Select an existing preset or turn off 'Start using selected preset'.")
+        state, warnings, _document = self._preset_parameter_state(preset)
+        return state, warnings
+
+    def _load_selected_preset(self) -> None:
+        path = self._selected_preset()
+        if path is None:
+            messagebox.showerror("Preset", "Select a preset first.")
+            return
+        try:
+            state, warnings, document = self._preset_parameter_state(path)
+        except PresetError as exc:
+            messagebox.showerror("Could not load preset", str(exc))
+            return
+        for key, control in self.parameter_controls.items():
+            control.set_state(state[key])
+        self._report_preset_warnings(warnings, document)
+        self._append_log(f"Loaded preset: {path}")
+        self._schedule_preview()
+
+    def _report_preset_warnings(self, warnings: list[str], document: Mapping[str, Any]) -> None:
+        model = self._selected_model()
+        preset_model = document.get("model", {})
+        preset_relative = preset_model.get("relative_path") if isinstance(preset_model, Mapping) else None
+        if model and preset_relative and preset_relative != model.relative_path.as_posix():
+            warnings.append(
+                f"Preset was saved for '{preset_relative}', selected model is '{model.relative_path.as_posix()}'."
+            )
+        for warning in warnings:
+            self._append_log(f"WARNING: {warning}")
+
+    def _save_preset(self) -> None:
+        model = self._selected_model()
+        if model is None:
+            messagebox.showerror("Save preset", "Select a model first.")
+            return
+        name = simpledialog.askstring("Save preset", "Preset name:", parent=self.root)
+        if name is None:
+            return
+        if not name.strip():
+            messagebox.showerror("Save preset", "Preset name cannot be empty.")
+            return
+        target = self.preset_manager.path_for_name(model, name)
+        if target.exists() and not messagebox.askyesno(
+            "Overwrite preset", f"'{target.name}' already exists. Overwrite it?", parent=self.root
+        ):
+            return
+        try:
+            saved = self.preset_manager.save(model, name, self._current_parameter_state())
+        except PresetError as exc:
+            messagebox.showerror("Could not save preset", str(exc))
+            return
+        self._append_log(f"Saved preset: {saved}")
+        self._refresh_presets()
+        self.preset_var.set(saved.stem)
+        self._schedule_preview()
+
+    def _clear(self) -> None:
+        self._reset_parameters(safe_profile=True)
+        self._append_log("Parameters reset to the safe universal profile.")
+
+    def _start_capability_detection(self) -> None:
+        if not self.paths.server.is_file():
+            self.supported_keys = None
+            self._apply_supported_state()
+            self._update_buttons()
+            return
+        self.detect_button.configure(state="disabled")
+        self._append_log("Reading llama-server --help...")
+
+        def worker() -> None:
+            result = detect_supported_parameters(self.paths.server)
+            self.background_events.put(("detection", result))
+
+        threading.Thread(target=worker, daemon=True).start()
+
+    def _apply_supported_state(self) -> None:
+        for key, control in self.parameter_controls.items():
+            control.set_supported(self.supported_keys is None or key in self.supported_keys)
+        self._schedule_preview()
+
+    def _schedule_preview(self) -> None:
+        if not hasattr(self, "preview_text"):
+            return
+        if self.preview_after_id is not None:
+            self.root.after_cancel(self.preview_after_id)
+        self.preview_after_id = self.root.after(self.PREVIEW_DELAY_MS, self._update_preview)
+
+    def _update_preview(self) -> None:
+        self.preview_after_id = None
+        model = self._selected_model()
+        try:
+            if model is None:
+                preview = f"Select a GGUF model. Models directory: {self.paths.models}"
+            else:
+                state, warnings = self._state_for_command()
+                command = build_command(
+                    self.paths.server,
+                    model.path,
+                    state,
+                    supported_keys=self.supported_keys,
+                )
+                preview = format_windows_command(command)
+                omitted = self._unsupported_enabled_keys(state)
+                notes = warnings + ([f"Unsupported selected parameters omitted: {', '.join(omitted)}"] if omitted else [])
+                if notes:
+                    preview += "\n\n# " + "\n# ".join(notes)
+        except (CommandValidationError, PresetError) as exc:
+            preview = f"Cannot build command: {exc}"
+        self._replace_text(self.preview_text, preview)
+
+    def _unsupported_enabled_keys(self, state: Mapping[str, Mapping[str, Any]]) -> list[str]:
+        if self.supported_keys is None:
+            return []
+        return [
+            key
+            for key, item in state.items()
+            if bool(item.get("enabled", False)) and key not in self.supported_keys
+        ]
+
+    def _start_server(self) -> None:
+        if self.server_process.is_running():
+            messagebox.showwarning("llama-server", "llama-server is already running.")
+            return
+        model = self._selected_model()
+        if model is None:
+            messagebox.showerror("Cannot start", "Select a GGUF model first.")
+            return
+        try:
+            state, warnings = self._state_for_command()
+            command = build_command(
+                self.paths.server,
+                model.path,
+                state,
+                supported_keys=self.supported_keys,
+            )
+        except (CommandValidationError, PresetError) as exc:
+            messagebox.showerror("Cannot start llama-server", str(exc))
+            return
+
+        for warning in warnings:
+            self._append_log(f"WARNING: {warning}")
+        omitted = self._unsupported_enabled_keys(state)
+        if omitted:
+            self._append_log(f"WARNING: unsupported parameters omitted: {', '.join(omitted)}")
+        ctx_state = state.get("ctx_size", {})
+        try:
+            if bool(ctx_state.get("enabled")) and int(ctx_state.get("value", 0)) >= 131_072:
+                self._append_log("WARNING: very large context sizes may require a large amount of RAM/VRAM.")
+        except (TypeError, ValueError):
+            pass
+
+        self._append_log("Starting command:\n" + format_windows_command(command))
+        try:
+            pid = self.server_process.start(command, self.paths.llama_root)
+        except (OSError, RuntimeError) as exc:
+            self._append_log(traceback.format_exc())
+            messagebox.showerror("Could not start llama-server", str(exc))
+            return
+        self.stopping = False
+        self.run_status_var.set("Status: Running")
+        self.pid_var.set(f"PID: {pid}")
+        self._update_buttons()
+
+    def _stop_server(self) -> None:
+        if not self.server_process.is_running():
+            return
+        self.stopping = True
+        self.run_status_var.set("Status: Stopping")
+        self.server_process.stop_async()
+        self._update_buttons()
+
+    def _update_buttons(self) -> None:
+        running = self.server_process.is_running()
+        can_start = self.paths.server.is_file() and self._selected_model() is not None and not running
+        self.start_button.configure(state="normal" if can_start else "disabled")
+        self.stop_button.configure(state="normal" if running and not self.stopping else "disabled")
+
+    def _poll_events(self) -> None:
+        try:
+            while True:
+                kind, value = self.server_process.events.get_nowait()
+                if kind == "log":
+                    self._append_log(str(value))
+                elif kind == "exit":
+                    self.stopping = False
+                    self.run_status_var.set(f"Status: Stopped (exit code {value})")
+                    self.pid_var.set("PID: -")
+                    self._append_log(f"llama-server exited with code {value}.")
+                    self._update_buttons()
+                    if self.closing:
+                        self._finish_close()
+        except queue.Empty:
+            pass
+
+        try:
+            while True:
+                kind, value = self.background_events.get_nowait()
+                if kind == "detection":
+                    self._handle_detection(value)
+        except queue.Empty:
+            pass
+
+        if not self.closing or self.server_process.is_running():
+            self.root.after(100, self._poll_events)
+
+    def _handle_detection(self, value: object) -> None:
+        result = value if isinstance(value, DetectionResult) else DetectionResult("", None, "Invalid result")
+        self.detect_button.configure(state="normal")
+        self.supported_keys = result.supported_keys
+        self._apply_supported_state()
+        if result.error:
+            self._append_log(
+                f"Could not inspect llama-server --help: {result.error}. Built-in parameter list remains available."
+            )
+        else:
+            unsupported = len(PARAMETER_SPECS) - len(result.supported_keys or ())
+            self._append_log(
+                f"CLI detection complete: {len(result.supported_keys or ())} supported, {unsupported} unsupported."
+            )
+
+    def _replace_text(self, widget: tk.Text, text: str) -> None:
+        widget.configure(state="normal")
+        widget.delete("1.0", "end")
+        widget.insert("1.0", text)
+        widget.configure(state="disabled")
+
+    def _append_log(self, text: str) -> None:
+        if not hasattr(self, "output_text"):
+            return
+        self.output_text.configure(state="normal")
+        self.output_text.insert("end", text.rstrip("\n") + "\n")
+        self.output_text.see("end")
+        self.output_text.configure(state="disabled")
+
+    def _on_close(self) -> None:
+        if self.closing:
+            return
+        if self.server_process.is_running():
+            should_stop = messagebox.askyesno(
+                "llama-server is running",
+                "llama-server is still running.\nStop it and exit?",
+                parent=self.root,
+            )
+            if not should_stop:
+                return
+            self.closing = True
+            self._stop_server()
+            return
+        self._finish_close()
+
+    def _finish_close(self) -> None:
+        self._save_settings()
+        self.root.destroy()

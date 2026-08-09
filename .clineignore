@@ -1,0 +1,55 @@
+# Frontend dependencies
+ui/rd-web/node_modules/
+
+# Frontend local env files
+ui/rd-web/.env
+ui/rd-web/.env.*
+!ui/rd-web/.env.example
+
+# Vite/TypeScript cache
+ui/rd-web/.vite/
+ui/rd-web/tsconfig.tsbuildinfo
+ui/rd-web/tsconfig.*.tsbuildinfo
+
+# Go-embedded React build output
+internal/gui/web/dist/
+
+.idea/
+logs/
+/updater/
+userdata/
+*.json
+*.exe
+*.exe~
+*.txt
+*.csv
+*.bat
+tester-prv.go
+
+# Ignore IDE files
+.idea/
+# Ignore test files
+/*.exe
+/*.txt
+/*.json
+/*.env
+
+# Ignore runtime catalog
+data/
+
+__pycache__/
+.idea/
+.venv/
+logs/
+date/
+updater/
+bin/
+_problems/
+/gui/_resources
+uuid
+ad
+main-temp.py
+*.json
+*.exe
+*.txt
+.dll
