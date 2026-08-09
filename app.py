@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import logging
 from pathlib import Path
 import queue
 import threading
@@ -26,7 +27,16 @@ from model_scanner import ModelInfo, ModelScanner
 from parameter_specs import CATEGORIES, PARAMETER_SPECS, SPEC_BY_KEY
 from preset_manager import PresetError, PresetManager
 from server_process import LlamaServerProcess
+from tray import TrayController
 from widgets import ParameterControl, ScrollableFrame, Tooltip
+from windows_integration import (
+    apply_window_icon,
+    frozen_executable_path,
+    resolve_icon_path,
+)
+
+
+LOGGER = logging.getLogger(__name__)
 
 
 class LauncherApp:
@@ -45,11 +55,16 @@ class LauncherApp:
         self.supported_keys: frozenset[str] | None = None
         self.preview_after_id: str | None = None
         self.closing = False
+        self.quit_finished = False
         self.stopping = False
         self.server_url: str | None = None
         self.settings = self._load_settings()
+        icon_path = resolve_icon_path(paths.base_dir)
+        executable_icon = frozen_executable_path()
+        self.tray = TrayController(self.background_events, icon_path, executable_icon)
 
         self.root.title("llala-launcher")
+        self.window_icon_handles = apply_window_icon(self.root, icon_path, executable_icon)
         self.root.minsize(900, 700)
         try:
             self.root.geometry(str(self.settings.get("window_geometry", "1120x860")))
@@ -72,6 +87,7 @@ class LauncherApp:
         self._update_buttons()
         self._schedule_preview()
         self.root.after(100, self._poll_events)
+        self.tray.start()
 
     def _build_ui(self) -> None:
         outer = ttk.Frame(self.root, padding=10)
@@ -471,30 +487,44 @@ class LauncherApp:
         try:
             while True:
                 kind, value = self.server_process.events.get_nowait()
-                if kind == "log":
-                    self._append_log(str(value))
-                elif kind == "exit":
-                    self.stopping = False
-                    self.server_url = None
-                    self.run_status_var.set(f"Status: Stopped (exit code {value})")
-                    self.pid_var.set("PID: -")
-                    self._append_log(f"llama-server exited with code {value}.")
-                    self._update_buttons()
-                    if self.closing:
-                        self._finish_close()
+                self._handle_server_event(kind, value)
+                if self.quit_finished:
+                    return
         except queue.Empty:
             pass
 
         try:
             while True:
                 kind, value = self.background_events.get_nowait()
-                if kind == "detection":
-                    self._handle_detection(value)
+                self._handle_background_event(kind, value)
+                if self.quit_finished:
+                    return
         except queue.Empty:
             pass
 
-        if not self.closing or self.server_process.is_running():
+        if not self.quit_finished:
             self.root.after(100, self._poll_events)
+
+    def _handle_server_event(self, kind: str, value: object) -> None:
+        if kind == "log":
+            self._append_log(str(value))
+        elif kind == "exit":
+            self.stopping = False
+            self.server_url = None
+            self.run_status_var.set(f"Status: Stopped (exit code {value})")
+            self.pid_var.set("PID: -")
+            self._append_log(f"llama-server exited with code {value}.")
+            self._update_buttons()
+            if self.closing:
+                self._finish_quit()
+
+    def _handle_background_event(self, kind: str, value: object) -> None:
+        if kind == "detection":
+            self._handle_detection(value)
+        elif kind == "tray_open":
+            self._show_main_window()
+        elif kind == "tray_quit":
+            self._request_quit()
 
     def _handle_detection(self, value: object) -> None:
         result = value if isinstance(value, DetectionResult) else DetectionResult("", None, "Invalid result")
@@ -526,21 +556,50 @@ class LauncherApp:
         self.output_text.configure(state="disabled")
 
     def _on_close(self) -> None:
-        if self.closing:
+        self._hide_main_window()
+
+    def _hide_main_window(self) -> None:
+        if self.closing or self.quit_finished:
             return
+        self.root.withdraw()
+
+    def _show_main_window(self) -> None:
+        if self.closing or self.quit_finished:
+            return
+        self.root.deiconify()
+        self.root.state("normal")
+        self.root.lift()
+        self.root.after_idle(self._focus_main_window)
+
+    def _focus_main_window(self) -> None:
+        if self.closing or self.quit_finished:
+            return
+        self.root.lift()
+        self.root.focus_force()
+
+    def _request_quit(self) -> None:
+        if self.closing or self.quit_finished:
+            return
+        self.closing = True
         if self.server_process.is_running():
-            should_stop = messagebox.askyesno(
-                "llama-server is running",
-                "llama-server is still running.\nStop it and exit?",
-                parent=self.root,
-            )
-            if not should_stop:
-                return
-            self.closing = True
             self._stop_server()
             return
-        self._finish_close()
+        self._finish_quit()
+
+    def _finish_quit(self) -> None:
+        if self.quit_finished:
+            return
+        self.quit_finished = True
+        self._save_settings()
+        try:
+            self.tray.shutdown()
+        except Exception:
+            LOGGER.warning("Could not shut down tray cleanly", exc_info=True)
+        try:
+            self.root.destroy()
+        finally:
+            self.window_icon_handles.close()
 
     def _finish_close(self) -> None:
-        self._save_settings()
-        self.root.destroy()
+        """Compatibility alias for the former full-close helper."""
+        self._finish_quit()

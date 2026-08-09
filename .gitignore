@@ -26,6 +26,7 @@ AGENTS.md
 *.exe
 *.exe~
 *.txt
+!requirements.txt
 *.csv
 *.bat
 tester-prv.go

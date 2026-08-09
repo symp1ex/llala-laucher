@@ -1,13 +1,20 @@
 # llala-launcher
 
-`llala-launcher` — автономный Windows GUI на Python 3.13 и `tkinter` для настройки, запуска и остановки `llama-server.exe` из llama.cpp. Сторонние GUI-библиотеки и Python-пакеты не нужны.
+`llala-launcher` — автономный Windows GUI на Python 3.13 и `tkinter` для настройки, запуска и остановки `llama-server.exe` из llama.cpp. Для системного tray используется небольшой Windows-пакет `infi.systray`.
 
 ## Требования и структура
 
 - Windows 10/11;
 - Python 3.13 с `tkinter`;
+- `infi.systray==0.1.12.1` из `requirements.txt`;
 - совместимая Windows-сборка llama.cpp;
 - одна или несколько моделей GGUF.
+
+Установка Python-зависимостей:
+
+```powershell
+python -m pip install -r requirements.txt
+```
 
 Рекомендуемая структура отделяет код launcher от бинарников llama.cpp:
 
@@ -16,12 +23,16 @@ llala-launcher/
 ├─ llala-launcher.py
 ├─ app.py
 ├─ app_paths.py
+├─ tray.py
+├─ windows_integration.py
 ├─ llama_server.py
 ├─ model_scanner.py
 ├─ parameter_specs.py
 ├─ preset_manager.py
 ├─ server_process.py
 ├─ widgets.py
+├─ requirements.txt
+├─ icon.ico                    # окно, taskbar, Alt+Tab и tray
 ├─ launcher-settings.json       # создается после закрытия
 └─ llama/
    ├─ llama-server.exe
@@ -33,7 +44,7 @@ llala-launcher/
       └─ <model-id>/*.json
 ```
 
-Все пути вычисляются от `Path(__file__).resolve().parent`, текущий каталог процесса (`%CD%`) не используется.
+При запуске из исходников все пути вычисляются от каталога launcher. В frozen EXE рабочим корнем становится каталог самого EXE. Текущий каталог процесса (`%CD%`) не используется.
 
 На этапе разработки в `app_paths.py` задан временный fallback:
 
@@ -52,6 +63,30 @@ python llala-launcher.py
 ```
 
 Можно также открыть `llala-launcher.py` двойным кликом, если `.py` связан с Python. Если EXE не найден, приложение продолжит работать, покажет `NOT FOUND`, а кнопка Start будет недоступна. Пустой или отсутствующий `models/` тоже не приводит к падению.
+
+При обычном запуске одновременно открываются главное окно и системный tray:
+
+- системная кнопка **X** только скрывает окно; launcher, polling и запущенный `llama-server` продолжают работать;
+- **Open** в tray и двойной клик по иконке возвращают то же главное окно без запуска второго процесса;
+- встроенный пункт **Quit** — единственный полный выход: он без confirmation-диалога асинхронно останавливает `llama-server`, дожидается события завершения, сохраняет settings, удаляет tray icon и закрывает tkinter.
+
+Callbacks `infi.systray` выполняются в отдельном Windows message-loop thread. Они не обращаются к tkinter: `tray_open` и `tray_quit` кладутся в `LauncherApp.background_events` и обрабатываются UI thread существующим polling.
+
+Tray регистрирует Unicode-сообщение `TaskbarCreated` и повторяет `NIM_ADD` после перезапуска Explorer. Если `NIM_MODIFY` сообщает об утраченной регистрации, выполняется новый `NIM_ADD`.
+
+## Иконка и сборка PyInstaller
+
+Основной файл `icon.ico` используется через `iconbitmap(default=...)` и `WM_SETICON` для titlebar, taskbar, Alt+Tab и thumbnail preview, а также для notification icon. До создания `tk.Tk()` процесс получает постоянный AppUserModelID `llala.launcher`.
+
+Минимальная команда сборки на Windows:
+
+```powershell
+python -m PyInstaller --onefile --noconsole --name llala-launcher --icon=icon.ico --add-data "icon.ico;." llala-launcher.py
+```
+
+В source-режиме выбирается `<project>/icon.ico`. В frozen-режиме сначала проверяется `icon.ico` рядом с EXE, затем data-файл `icon.ico` внутри `sys._MEIPASS`, создаваемый указанным `--add-data` (в Windows разделитель source/destination — `;`). Если standalone ICO отсутствует, и главное окно, и tray пытаются извлечь icon resource из `sys.executable`, добавленный параметром `--icon=icon.ico`; извлечённые Win32 handles освобождаются при завершении.
+
+Каталоги `llama/`, `models/` и `preset/` остаются внешними и должны находиться рядом с frozen EXE согласно структуре выше.
 
 ## Модели и model ID
 
@@ -115,4 +150,4 @@ python -m compileall .
 python -m unittest discover -v
 ```
 
-Тесты покрывают пустой каталог моделей, рекурсивный scan, model ID, preset round-trip, отсутствие EXE, исключение disabled/unsupported аргументов и эквивалентность `original-bat.json` исходному BAT.
+Тесты покрывают пустой каталог моделей, рекурсивный scan, model ID, preset round-trip, отсутствие EXE, исключение disabled/unsupported аргументов, эквивалентность `original-bat.json` исходному BAT, queue-only tray callbacks, X/Open/Quit lifecycle, идемпотентный Quit, ожидание server `exit`, повторный `NIM_ADD` и source/frozen icon resolution.

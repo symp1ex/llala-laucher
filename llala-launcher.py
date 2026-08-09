@@ -3,15 +3,21 @@
 from __future__ import annotations
 
 from pathlib import Path
+import sys
 import tkinter as tk
 
 from app import LauncherApp
 from app_paths import resolve_app_paths
+from windows_integration import set_windows_app_user_model_id
 
 
 def main() -> None:
-    base_dir = Path(__file__).resolve().parent
+    if getattr(sys, "frozen", False):
+        base_dir = Path(sys.executable).resolve().parent
+    else:
+        base_dir = Path(__file__).resolve().parent
     paths = resolve_app_paths(base_dir)
+    set_windows_app_user_model_id()
     root = tk.Tk()
     LauncherApp(root, paths)
     root.mainloop()
