@@ -42,7 +42,10 @@ class LlamaServerProcess:
 
             creation_flags = 0
             if os.name == "nt":
-                creation_flags = subprocess.CREATE_NEW_PROCESS_GROUP
+                creation_flags = (
+                    subprocess.CREATE_NEW_PROCESS_GROUP
+                    | subprocess.CREATE_NO_WINDOW
+                )
             process = subprocess.Popen(
                 list(command),
                 cwd=str(cwd),

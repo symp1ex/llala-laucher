@@ -63,7 +63,7 @@ class LauncherApp:
         executable_icon = frozen_executable_path()
         self.tray = TrayController(self.background_events, icon_path, executable_icon)
 
-        self.root.title("llala-launcher")
+        self.root.title("llala-laucher")
         self.window_icon_handles = apply_window_icon(self.root, icon_path, executable_icon)
         self.root.minsize(900, 700)
         try:

@@ -1,4 +1,4 @@
-"""Application path resolution for llala-launcher."""
+"""Application path resolution for llala-laucher."""
 
 from __future__ import annotations
 
@@ -48,6 +48,6 @@ def resolve_app_paths(
         server=llama_root / "llama-server.exe",
         models=llama_root / "models",
         presets=llama_root / "preset",
-        settings=base_dir / "launcher-settings.json",
+        settings=base_dir / "laucher-settings.json",
         using_development_fallback=using_fallback,
     )

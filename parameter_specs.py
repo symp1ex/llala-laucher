@@ -60,7 +60,7 @@ PARAMETER_SPECS: tuple[ParameterSpec, ...] = (
     ParameterSpec("cpu_moe", "--cpu-moe", "--cpu-moe", "Keep all experts on CPU", "MoE", "bool", True, tooltip="Keep all MoE expert weights in system RAM. Saves VRAM but can reduce speed."),
     ParameterSpec("n_cpu_moe", "--n-cpu-moe", "--n-cpu-moe", "CPU expert layers", "MoE", "int", 0, min_value=0, max_value=1_000_000, tooltip="Keep expert weights for the first N layers on CPU. Useful for partial expert offload."),
     ParameterSpec("override_tensor", "--override-tensor", "--override-tensor", "Tensor placement override", "MoE", "text", "", tooltip="Advanced tensor-pattern=buffer overrides. Can place selected expert tensors on CPU/GPU; syntax is build-specific."),
-    ParameterSpec("api_key", "--api-key", "--api-key", "API key", "Server / API", "secret", "", tooltip="Require this key for API access. Never stored in launcher-settings.json."),
+    ParameterSpec("api_key", "--api-key", "--api-key", "API key", "Server / API", "secret", "", tooltip="Require this key for API access. Never stored in laucher-settings.json."),
     ParameterSpec("timeout", "--timeout", "--timeout", "HTTP timeout", "Server / API", "int", 3600, min_value=1, max_value=2_147_483_647, tooltip="Server read/write timeout in seconds."),
     ParameterSpec("threads_http", "--threads-http", "--threads-http", "HTTP threads", "Server / API", "int", -1, min_value=-1, max_value=4096, tooltip="Threads serving HTTP requests; -1 lets llama.cpp decide."),
     ParameterSpec("metrics", "--metrics", "--metrics", "Metrics endpoint", "Server / API", "bool", True, tooltip="Expose Prometheus-compatible metrics."),

@@ -1,4 +1,4 @@
-"""Windows entry point for llala-launcher."""
+"""Windows entry point for llala-laucher."""
 
 from __future__ import annotations
 

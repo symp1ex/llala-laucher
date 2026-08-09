@@ -1,1 +1,1 @@
-"""llala-launcher tests."""
+"""llala-laucher tests."""

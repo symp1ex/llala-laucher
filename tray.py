@@ -271,7 +271,7 @@ class TrayController:
         self._shutdown = False
         self.systray = tray_factory(
             str(icon_path) if icon_path is not None else None,
-            "llala-launcher",
+            "llala-laucher",
             (("Open", None, self._queue_open),),
             on_quit=self._queue_quit,
             default_menu_index=0,

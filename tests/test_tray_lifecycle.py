@@ -75,7 +75,7 @@ class PersistentTrayIconTests(unittest.TestCase):
         icon._hwnd = 123
         icon._shutdown_requested = False
         icon._hicon = 456
-        icon._hover_text = "llala-launcher"
+        icon._hover_text = "llala-laucher"
         icon._icon_registered = True
         icon.ready_event = threading.Event()
         icon.ready_event.set()
@@ -97,13 +97,13 @@ class PersistentTrayIconTests(unittest.TestCase):
         icon._icon = None
         icon._hicon = 0
         icon._icon_shared = True
-        icon._executable_icon_path = Path("llala-launcher.exe")
+        icon._executable_icon_path = Path("llala-laucher.exe")
         icon._release_owned_icon = Mock()
 
         with patch("tray.extract_executable_icon", return_value=789) as extract:
             icon._load_icon()
 
-        extract.assert_called_once_with(Path("llala-launcher.exe"), small=False)
+        extract.assert_called_once_with(Path("llala-laucher.exe"), small=False)
         icon._release_owned_icon.assert_called_once_with()
         self.assertEqual(icon._hicon, 789)
         self.assertFalse(icon._icon_shared)
@@ -216,7 +216,7 @@ class IconResolverTests(unittest.TestCase):
     def test_frozen_mode_uses_icon_next_to_executable_first(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)
-            executable = root / "dist" / "llala-launcher.exe"
+            executable = root / "dist" / "llala-laucher.exe"
             executable.parent.mkdir()
             executable.touch()
             sidecar = executable.parent / "icon.ico"
@@ -235,7 +235,7 @@ class IconResolverTests(unittest.TestCase):
     def test_frozen_mode_falls_back_to_meipass_data_icon(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)
-            executable = root / "dist" / "llala-launcher.exe"
+            executable = root / "dist" / "llala-laucher.exe"
             executable.parent.mkdir()
             executable.touch()
             bundled = root / "bundle" / "icon.ico"

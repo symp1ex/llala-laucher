@@ -1,6 +1,6 @@
-# llala-launcher
+# llala-laucher
 
-`llala-launcher` — автономный Windows GUI на Python 3.13 и `tkinter` для настройки, запуска и остановки `llama-server.exe` из llama.cpp. Для системного tray используется небольшой Windows-пакет `infi.systray`.
+`llala-laucher` — автономный Windows GUI на Python 3.13 и `tkinter` для настройки, запуска и остановки `llama-server.exe` из llama.cpp. Для системного tray используется небольшой Windows-пакет `infi.systray`.
 
 ## Требования и структура
 
@@ -19,8 +19,8 @@ python -m pip install -r requirements.txt
 Рекомендуемая структура отделяет код launcher от бинарников llama.cpp:
 
 ```text
-llala-launcher/
-├─ llala-launcher.py
+llala-laucher/
+├─ llala-laucher.py
 ├─ app.py
 ├─ app_paths.py
 ├─ tray.py
@@ -33,7 +33,7 @@ llala-launcher/
 ├─ widgets.py
 ├─ requirements.txt
 ├─ icon.ico                    # окно, taskbar, Alt+Tab и tray
-├─ launcher-settings.json       # создается после закрытия
+├─ laucher-settings.json       # создается после закрытия
 └─ llama/
    ├─ llama-server.exe
    ├─ *.dll                     # DLL из той же сборки llama.cpp
@@ -59,10 +59,10 @@ F:\itt\llama\llama-b10282-bin-win-cuda-13.3-x64
 Из корня проекта:
 
 ```powershell
-python llala-launcher.py
+python llala-laucher.py
 ```
 
-Можно также открыть `llala-launcher.py` двойным кликом, если `.py` связан с Python. Если EXE не найден, приложение продолжит работать, покажет `NOT FOUND`, а кнопка Start будет недоступна. Пустой или отсутствующий `models/` тоже не приводит к падению.
+Можно также открыть `llala-laucher.py` двойным кликом, если `.py` связан с Python. Если EXE не найден, приложение продолжит работать, покажет `NOT FOUND`, а кнопка Start будет недоступна. Пустой или отсутствующий `models/` тоже не приводит к падению.
 
 При обычном запуске одновременно открываются главное окно и системный tray:
 
@@ -81,7 +81,7 @@ Tray регистрирует Unicode-сообщение `TaskbarCreated` и п�
 Минимальная команда сборки на Windows:
 
 ```powershell
-python -m PyInstaller --onefile --noconsole --name llala-launcher --icon=icon.ico --add-data "icon.ico;." llala-launcher.py
+python -m PyInstaller --onefile --noconsole --name llala-laucher --icon=icon.ico --add-data "icon.ico;." llala-laucher.py
 ```
 
 В source-режиме выбирается `<project>/icon.ico`. В frozen-режиме сначала проверяется `icon.ico` рядом с EXE, затем data-файл `icon.ico` внутри `sys._MEIPASS`, создаваемый указанным `--add-data` (в Windows разделитель source/destination — `;`). Если standalone ICO отсутствует, и главное окно, и tray пытаются извлечь icon resource из `sys.executable`, добавленный параметром `--icon=icon.ico`; извлечённые Win32 handles освобождаются при завершении.
@@ -115,7 +115,7 @@ preset/Qwen3.6-35B-A3B-Q4_K_M--f6b98dc27b/
 
 Кнопка **Load** явно переносит значения выбранного preset в UI. Checkbox **Start using selected preset** действует иначе: команда строится непосредственно из JSON, а текущие поля UI не изменяются. В этом режиме необходим существующий выбранный preset.
 
-**Save preset** записывает все параметры как `{ "enabled": ..., "value": ... }` в schema version 1. Неизвестные параметры будущих версий при загрузке игнорируются с предупреждением в Server output. API key входит в preset только при явном сохранении пользователем; в `launcher-settings.json` он никогда не записывается.
+**Save preset** записывает все параметры как `{ "enabled": ..., "value": ... }` в schema version 1. Неизвестные параметры будущих версий при загрузке игнорируются с предупреждением в Server output. API key входит в preset только при явном сохранении пользователем; в `laucher-settings.json` он никогда не записывается.
 
 Пример `original-bat.json` находится в:
 
@@ -139,7 +139,7 @@ llama/preset/Qwen3.6-35B-A3B-Q4_K_M--f6b98dc27b/original-bat.json
 
 Большой context увеличивает KV cache; `262144` может потребовать очень много RAM/VRAM. Квантизация `-ctk/-ctv` экономит память, но может влиять на качество и производительность. `--mlock`, `--no-mmap`, GPU split и MoE-параметры по умолчанию выключены.
 
-Preview и реальный запуск используют одну функцию `build_command()`. В `subprocess.Popen` передается `list[str]`, `shell=False`; preview — только человекочитаемое отображение argv. Пока процесс запущен, второй экземпляр из этого launcher стартовать нельзя. Stdout/stderr читаются в daemon-thread и передаются в tkinter через очередь. Stop выполняет `CTRL_BREAK_EVENT`, затем `terminate`, затем `kill`, не блокируя UI.
+Preview и реальный запуск используют одну функцию `build_command()`. В `subprocess.Popen` передается `list[str]`, `shell=False`; preview — только человекочитаемое отображение argv. Пока процесс запущен, второй экземпляр из этого launcher стартовать нельзя. На Windows `llama-server.exe` запускается с `CREATE_NO_WINDOW`, поэтому отдельное консольное окно не появляется, а stdout/stderr по-прежнему читаются в daemon-thread и передаются в tkinter через очередь. Stop выполняет `CTRL_BREAK_EVENT`, затем `terminate`, затем `kill`, не блокируя UI.
 
 Кнопка **Open Web UI** становится активной после запуска и открывает фактический адрес сервера в браузере по умолчанию. Bind-адреса `0.0.0.0` и `::` для открытия заменяются на локальный `127.0.0.1`.
 
