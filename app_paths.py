@@ -16,6 +16,8 @@ DEVELOPMENT_LLAMA_ROOT: Path | None = Path(
 @dataclass(frozen=True, slots=True)
 class AppPaths:
     base_dir: Path
+    updater_dir: Path
+    updater_exe: Path
     llama_root: Path
     server: Path
     models: Path
@@ -44,6 +46,8 @@ def resolve_app_paths(
 
     return AppPaths(
         base_dir=base_dir,
+        updater_dir=base_dir / "updater",
+        updater_exe=base_dir / "updater" / "updater-ll.exe",
         llama_root=llama_root,
         server=llama_root / "llama-server.exe",
         models=llama_root / "models",

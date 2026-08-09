@@ -6,6 +6,7 @@ import json
 import logging
 from pathlib import Path
 import queue
+import re
 import threading
 import tkinter as tk
 from tkinter import messagebox, simpledialog, ttk
@@ -28,9 +29,12 @@ from parameter_specs import CATEGORIES, PARAMETER_SPECS, SPEC_BY_KEY
 from preset_manager import PresetError, PresetManager
 from server_process import LlamaServerProcess
 from tray import TrayController
+from updater import CheckResult, InstallResult, UpdateState, UpdaterService
+from version import VERSION
 from widgets import ParameterControl, ScrollableFrame, Tooltip
 from windows_integration import (
     apply_window_icon,
+    client_size_for_outer_window,
     frozen_executable_path,
     resolve_icon_path,
 )
@@ -41,10 +45,28 @@ LOGGER = logging.getLogger(__name__)
 
 class LauncherApp:
     PREVIEW_DELAY_MS = 250
+    UPDATE_SHUTDOWN_DELAY_MS = 2_000
+    WINDOW_OUTER_WIDTH = 900
+    WINDOW_OUTER_HEIGHT = 900
 
-    def __init__(self, root: tk.Tk, paths: AppPaths) -> None:
+    _UPDATE_TRANSITIONS = {
+        UpdateState.IDLE: frozenset({UpdateState.CHECKING}),
+        UpdateState.CHECKING: frozenset(
+            {UpdateState.IDLE, UpdateState.AVAILABLE, UpdateState.ERROR}
+        ),
+        UpdateState.AVAILABLE: frozenset({UpdateState.INSTALLING}),
+        UpdateState.INSTALLING: frozenset({UpdateState.AVAILABLE}),
+        UpdateState.ERROR: frozenset({UpdateState.CHECKING}),
+    }
+
+    def __init__(self, root: tk.Tk, paths: AppPaths, version: str = VERSION) -> None:
         self.root = root
         self.paths = paths
+        self.version = version
+        self.updater = UpdaterService(paths)
+        self.update_state = UpdateState.IDLE
+        self.update_activity_visible = False
+        self.auto_update_check_started = False
         self.model_scanner = ModelScanner(paths.models)
         self.preset_manager = PresetManager(paths.presets)
         self.server_process = LlamaServerProcess()
@@ -65,11 +87,16 @@ class LauncherApp:
 
         self.root.title("llala-laucher")
         self.window_icon_handles = apply_window_icon(self.root, icon_path, executable_icon)
-        self.root.minsize(900, 700)
-        try:
-            self.root.geometry(str(self.settings.get("window_geometry", "1120x860")))
-        except tk.TclError:
-            self.root.geometry("1120x860")
+        client_width, client_height = client_size_for_outer_window(
+            self.root,
+            self.WINDOW_OUTER_WIDTH,
+            self.WINDOW_OUTER_HEIGHT,
+        )
+        self.root.minsize(client_width, client_height)
+        saved_geometry = str(self.settings.get("window_geometry", ""))
+        position_match = re.fullmatch(r"\d+x\d+([+-]\d+[+-]\d+)", saved_geometry)
+        saved_position = position_match.group(1) if position_match else ""
+        self.root.geometry(f"{client_width}x{client_height}{saved_position}")
         self.root.protocol("WM_DELETE_WINDOW", self._on_close)
 
         self.server_status_var = tk.StringVar()
@@ -78,6 +105,7 @@ class LauncherApp:
         self.use_preset_var = tk.BooleanVar(value=False)
         self.run_status_var = tk.StringVar(value="Status: Stopped")
         self.pid_var = tk.StringVar(value="PID: -")
+        self.update_text_var = tk.StringVar(value=f"v{self.version}")
 
         self._build_ui()
         self._update_server_status()
@@ -88,6 +116,7 @@ class LauncherApp:
         self._schedule_preview()
         self.root.after(100, self._poll_events)
         self.tray.start()
+        self.root.after(0, self._start_automatic_update_check)
 
     def _build_ui(self) -> None:
         outer = ttk.Frame(self.root, padding=10)
@@ -107,7 +136,12 @@ class LauncherApp:
         self.model_combo = ttk.Combobox(selection, textvariable=self.model_var, state="readonly")
         self.model_combo.grid(row=0, column=1, sticky="ew")
         self.model_combo.bind("<<ComboboxSelected>>", self._on_model_selected)
-        ttk.Button(selection, text="Refresh models", command=self._refresh_models).grid(row=0, column=2, padx=(8, 0))
+        ttk.Button(selection, text="Refresh models", command=self._refresh_models).grid(
+            row=0,
+            column=2,
+            sticky="ew",
+            padx=(8, 0),
+        )
 
         ttk.Label(selection, text="Preset:").grid(row=1, column=0, sticky="w", padx=(0, 8), pady=(7, 0))
         self.preset_combo = ttk.Combobox(selection, textvariable=self.preset_var, state="readonly")
@@ -146,24 +180,48 @@ class LauncherApp:
         actions = ttk.Frame(outer)
         actions.pack(fill="x", pady=(0, 8))
         self.start_button = ttk.Button(actions, text="Start", command=self._start_server)
-        self.start_button.pack(side="left")
+        self.start_button.grid(row=0, column=0, sticky="w")
+        self.stop_button = ttk.Button(actions, text="Stop", command=self._stop_server)
+        self.stop_button.grid(row=0, column=1, sticky="w", padx=(5, 0))
+        self.open_web_button = ttk.Button(actions, text="Open Web UI", command=self._open_web_ui)
+        self.open_web_button.grid(row=0, column=2, sticky="w", padx=(5, 0))
+
+        ttk.Separator(actions, orient="vertical").grid(
+            row=0,
+            column=3,
+            sticky="ns",
+            padx=(12, 8),
+        )
+        self.save_button = ttk.Button(actions, text="Save preset", command=self._save_preset)
+        self.save_button.grid(row=0, column=4, sticky="w")
+        ttk.Button(actions, text="Clear", command=self._clear).grid(
+            row=0,
+            column=5,
+            sticky="w",
+            padx=(5, 0),
+        )
+
         use_preset = ttk.Checkbutton(
             actions,
             text="Start using selected preset",
             variable=self.use_preset_var,
             command=self._schedule_preview,
         )
-        use_preset.pack(side="left", padx=10)
+        use_preset.grid(row=1, column=0, columnspan=3, sticky="w", pady=(5, 0))
         Tooltip(use_preset, "Launch directly from the preset without replacing current UI values.")
-        self.stop_button = ttk.Button(actions, text="Stop", command=self._stop_server)
-        self.stop_button.pack(side="left")
-        self.open_web_button = ttk.Button(actions, text="Open Web UI", command=self._open_web_ui)
-        self.open_web_button.pack(side="left", padx=(5, 0))
-        self.save_button = ttk.Button(actions, text="Save preset", command=self._save_preset)
-        self.save_button.pack(side="left", padx=(10, 0))
-        ttk.Button(actions, text="Clear", command=self._clear).pack(side="left", padx=(5, 0))
-        ttk.Label(actions, textvariable=self.pid_var).pack(side="right", padx=(10, 0))
-        ttk.Label(actions, textvariable=self.run_status_var).pack(side="right")
+
+        actions.columnconfigure(6, weight=1)
+        ttk.Label(actions, textvariable=self.run_status_var).grid(
+            row=0,
+            column=7,
+            sticky="e",
+        )
+        ttk.Label(actions, textvariable=self.pid_var).grid(
+            row=0,
+            column=8,
+            sticky="e",
+            padx=(10, 0),
+        )
 
         output_frame = ttk.LabelFrame(outer, text="Server output", padding=6)
         output_frame.pack(fill="both", expand=False)
@@ -172,6 +230,109 @@ class LauncherApp:
         self.output_text.configure(yscrollcommand=output_scroll.set)
         self.output_text.pack(side="left", fill="both", expand=True)
         output_scroll.pack(side="right", fill="y")
+
+        footer = ttk.Frame(outer)
+        footer.pack(fill="x", pady=(2, 0))
+        style = ttk.Style(self.root)
+        style.configure("Updater.Version.TLabel", foreground="#6b6b6b")
+        style.configure("Updater.Attention.TLabel", foreground="#b24a4a")
+        self.update_action = ttk.Label(
+            footer,
+            textvariable=self.update_text_var,
+            style="Updater.Version.TLabel",
+            cursor="hand2",
+            takefocus=True,
+            padding=(2, 0),
+        )
+        self.update_action.pack(side="right")
+        self.update_action.bind("<Button-1>", self._activate_update_action)
+        self.update_action.bind("<Return>", self._activate_update_action)
+        self.update_action.bind("<space>", self._activate_update_action)
+        self.update_tooltip = Tooltip(self.update_action, "Click to check for updates.")
+        self.update_activity = ttk.Progressbar(
+            footer,
+            mode="indeterminate",
+            length=36,
+            maximum=10,
+        )
+
+    def _set_update_state(self, state: UpdateState, message: str = "") -> None:
+        current = self.update_state
+        if state != current and state not in self._UPDATE_TRANSITIONS[current]:
+            LOGGER.warning("[Updater] Ignoring invalid state transition: %s -> %s", current, state)
+            return
+
+        self.update_state = state
+        attention = state in {
+            UpdateState.AVAILABLE,
+            UpdateState.INSTALLING,
+            UpdateState.ERROR,
+        }
+        if state == UpdateState.ERROR:
+            text = "Update error"
+        elif state in {UpdateState.AVAILABLE, UpdateState.INSTALLING}:
+            text = "Install update"
+        else:
+            text = f"v{self.version}"
+        actionable = state in {UpdateState.IDLE, UpdateState.AVAILABLE, UpdateState.ERROR}
+        self.update_text_var.set(text)
+        self.update_action.configure(
+            cursor="hand2" if actionable else "",
+            style="Updater.Attention.TLabel" if attention else "Updater.Version.TLabel",
+        )
+
+        busy = state in {UpdateState.CHECKING, UpdateState.INSTALLING}
+        if busy and not self.update_activity_visible:
+            self.update_activity.pack(side="right", padx=(0, 5))
+            self.update_activity.start(12)
+            self.update_activity_visible = True
+        elif not busy and self.update_activity_visible:
+            self.update_activity.stop()
+            self.update_activity.pack_forget()
+            self.update_activity_visible = False
+
+        default_tooltips = {
+            UpdateState.IDLE: "Click to check for updates.",
+            UpdateState.CHECKING: "Checking for updates...",
+            UpdateState.AVAILABLE: "Click to install the available update.",
+            UpdateState.INSTALLING: "Starting update installation...",
+            UpdateState.ERROR: "Click to retry the update check.",
+        }
+        self.update_tooltip.text = message or default_tooltips[state]
+
+    def _start_automatic_update_check(self) -> None:
+        if self.auto_update_check_started:
+            return
+        self.auto_update_check_started = True
+        self._start_update_check()
+
+    def _activate_update_action(self, _event: tk.Event[Any] | None = None) -> None:
+        if self.update_state in {UpdateState.IDLE, UpdateState.ERROR}:
+            self._start_update_check()
+        elif self.update_state == UpdateState.AVAILABLE:
+            self._start_update_installation()
+
+    def _start_update_check(self) -> None:
+        if self.closing or self.quit_finished:
+            return
+        if self.update_state not in {UpdateState.IDLE, UpdateState.ERROR}:
+            return
+        self._set_update_state(UpdateState.CHECKING, "Checking for updates...")
+
+        def worker() -> None:
+            self.background_events.put(("update_check", self.updater.check()))
+
+        threading.Thread(target=worker, daemon=True).start()
+
+    def _start_update_installation(self) -> None:
+        if self.closing or self.quit_finished or self.update_state != UpdateState.AVAILABLE:
+            return
+        self._set_update_state(UpdateState.INSTALLING, "Starting update installation...")
+
+        def worker() -> None:
+            self.background_events.put(("update_install", self.updater.install()))
+
+        threading.Thread(target=worker, daemon=True).start()
 
     def _load_settings(self) -> dict[str, Any]:
         try:
@@ -521,10 +682,46 @@ class LauncherApp:
     def _handle_background_event(self, kind: str, value: object) -> None:
         if kind == "detection":
             self._handle_detection(value)
+        elif kind == "update_check":
+            self._handle_update_check_result(value)
+        elif kind == "update_install":
+            self._handle_update_install_result(value)
         elif kind == "tray_open":
             self._show_main_window()
         elif kind == "tray_quit":
             self._request_quit()
+
+    def _handle_update_check_result(self, value: object) -> None:
+        result = (
+            value
+            if isinstance(value, CheckResult)
+            else CheckResult(False, message="invalid updater check result")
+        )
+        if not result.ok:
+            message = result.message or "update check failed"
+            self._set_update_state(UpdateState.ERROR, message)
+            self._append_log(f"[Updater] Update check failed: {message}")
+        elif result.update_available:
+            self._set_update_state(UpdateState.AVAILABLE, "Update available")
+        else:
+            self._set_update_state(UpdateState.IDLE, "Application is up to date")
+
+    def _handle_update_install_result(self, value: object) -> None:
+        result = (
+            value
+            if isinstance(value, InstallResult)
+            else InstallResult(False, message="invalid updater install result")
+        )
+        if not result.ok:
+            message = result.message or "failed to start update installation"
+            self._set_update_state(UpdateState.AVAILABLE, message)
+            self._append_log(f"[Updater] Update installation failed: {message}")
+            return
+
+        self._append_log(f"[Updater] Update installation process started: pid={result.pid}")
+        self._append_log("[Updater] Application shutdown scheduled after update installation start")
+        LOGGER.info("[Updater] Application shutdown scheduled after update installation start")
+        self.root.after(self.UPDATE_SHUTDOWN_DELAY_MS, self._request_quit)
 
     def _handle_detection(self, value: object) -> None:
         result = value if isinstance(value, DetectionResult) else DetectionResult("", None, "Invalid result")

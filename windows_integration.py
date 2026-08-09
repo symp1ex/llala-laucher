@@ -54,6 +54,51 @@ def frozen_executable_path() -> Path | None:
     return Path(sys.executable).resolve()
 
 
+def client_size_for_outer_window(
+    root: Any,
+    outer_width: int,
+    outer_height: int,
+) -> tuple[int, int]:
+    """Convert a desired outer window size to the tkinter client size."""
+    if os.name != "nt":
+        return outer_width, outer_height
+
+    root.update_idletasks()
+    user32 = ctypes.WinDLL("user32", use_last_error=True)
+    child_hwnd = int(root.winfo_id())
+
+    get_parent = user32.GetParent
+    get_parent.argtypes = (wintypes.HWND,)
+    get_parent.restype = wintypes.HWND
+    hwnd = int(get_parent(child_hwnd) or child_hwnd)
+
+    get_window_rect = user32.GetWindowRect
+    get_window_rect.argtypes = (wintypes.HWND, ctypes.POINTER(wintypes.RECT))
+    get_window_rect.restype = wintypes.BOOL
+    get_client_rect = user32.GetClientRect
+    get_client_rect.argtypes = (wintypes.HWND, ctypes.POINTER(wintypes.RECT))
+    get_client_rect.restype = wintypes.BOOL
+
+    window_rect = wintypes.RECT()
+    client_rect = wintypes.RECT()
+    if not get_window_rect(hwnd, ctypes.byref(window_rect)) or not get_client_rect(
+        hwnd,
+        ctypes.byref(client_rect),
+    ):
+        LOGGER.warning("Could not measure the native window frame; using client dimensions")
+        return outer_width, outer_height
+
+    frame_width = max(
+        0,
+        (window_rect.right - window_rect.left) - (client_rect.right - client_rect.left),
+    )
+    frame_height = max(
+        0,
+        (window_rect.bottom - window_rect.top) - (client_rect.bottom - client_rect.top),
+    )
+    return max(1, outer_width - frame_width), max(1, outer_height - frame_height)
+
+
 def set_windows_app_user_model_id(app_id: str = APP_USER_MODEL_ID) -> None:
     """Set a stable Windows taskbar identity before creating the Tk root."""
     if os.name != "nt":
