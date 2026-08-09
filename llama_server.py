@@ -146,3 +146,35 @@ def format_windows_command(command: Sequence[str]) -> str:
         return ""
     quoted = [subprocess.list2cmdline([part]) for part in command]
     return " ^\n  ".join(quoted)
+
+
+def build_server_url(
+    parameter_state: Mapping[str, Mapping[str, Any]],
+    supported_keys: frozenset[str] | set[str] | None = None,
+) -> str:
+    """Return the browser URL matching the effective host and port."""
+    host_state = parameter_state.get("host", {})
+    port_state = parameter_state.get("port", {})
+    host_enabled = bool(host_state.get("enabled", False))
+    port_enabled = bool(port_state.get("enabled", False))
+    if supported_keys is not None:
+        host_enabled = host_enabled and "host" in supported_keys
+        port_enabled = port_enabled and "port" in supported_keys
+
+    host = str(host_state.get("value", "127.0.0.1")).strip() if host_enabled else "127.0.0.1"
+    port_value = port_state.get("value", 8080) if port_enabled else 8080
+    try:
+        port = int(str(port_value).strip())
+    except (TypeError, ValueError) as exc:
+        raise CommandValidationError("Port: enter a whole number") from exc
+    if not 1 <= port <= 65535:
+        raise CommandValidationError("Port: value must be between 1 and 65535")
+    if not host:
+        raise CommandValidationError("Host: value cannot be empty")
+    if host.casefold().endswith(".sock"):
+        raise CommandValidationError("Web UI cannot be opened for a Unix socket address")
+    if host in {"0.0.0.0", "::", "[::]", "*"}:
+        host = "127.0.0.1"
+    elif ":" in host and not host.startswith("["):
+        host = f"[{host}]"
+    return f"http://{host}:{port}/"

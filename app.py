@@ -10,12 +10,14 @@ import tkinter as tk
 from tkinter import messagebox, simpledialog, ttk
 import traceback
 from typing import Any, Mapping
+import webbrowser
 
 from app_paths import AppPaths
 from llama_server import (
     CommandValidationError,
     DetectionResult,
     build_command,
+    build_server_url,
     default_parameter_state,
     detect_supported_parameters,
     format_windows_command,
@@ -44,6 +46,7 @@ class LauncherApp:
         self.preview_after_id: str | None = None
         self.closing = False
         self.stopping = False
+        self.server_url: str | None = None
         self.settings = self._load_settings()
 
         self.root.title("llala-launcher")
@@ -138,6 +141,8 @@ class LauncherApp:
         Tooltip(use_preset, "Launch directly from the preset without replacing current UI values.")
         self.stop_button = ttk.Button(actions, text="Stop", command=self._stop_server)
         self.stop_button.pack(side="left")
+        self.open_web_button = ttk.Button(actions, text="Open Web UI", command=self._open_web_ui)
+        self.open_web_button.pack(side="left", padx=(5, 0))
         self.save_button = ttk.Button(actions, text="Save preset", command=self._save_preset)
         self.save_button.pack(side="left", padx=(10, 0))
         ttk.Button(actions, text="Clear", command=self._clear).pack(side="left", padx=(5, 0))
@@ -398,6 +403,7 @@ class LauncherApp:
                 state,
                 supported_keys=self.supported_keys,
             )
+            server_url = build_server_url(state, self.supported_keys)
         except (CommandValidationError, PresetError) as exc:
             messagebox.showerror("Cannot start llama-server", str(exc))
             return
@@ -421,6 +427,7 @@ class LauncherApp:
             self._append_log(traceback.format_exc())
             messagebox.showerror("Could not start llama-server", str(exc))
             return
+        self.server_url = server_url
         self.stopping = False
         self.run_status_var.set("Status: Running")
         self.pid_var.set(f"PID: {pid}")
@@ -434,11 +441,31 @@ class LauncherApp:
         self.server_process.stop_async()
         self._update_buttons()
 
+    def _open_web_ui(self) -> None:
+        if not self.server_process.is_running() or self.server_url is None:
+            messagebox.showinfo("Web UI", "Start llama-server first.")
+            return
+        try:
+            opened = webbrowser.open(self.server_url, new=2)
+        except (webbrowser.Error, OSError) as exc:
+            messagebox.showerror("Could not open Web UI", str(exc))
+            return
+        if not opened:
+            messagebox.showerror(
+                "Could not open Web UI",
+                f"The default browser could not be opened.\nOpen this address manually:\n{self.server_url}",
+            )
+            return
+        self._append_log(f"Opened Web UI: {self.server_url}")
+
     def _update_buttons(self) -> None:
         running = self.server_process.is_running()
         can_start = self.paths.server.is_file() and self._selected_model() is not None and not running
         self.start_button.configure(state="normal" if can_start else "disabled")
         self.stop_button.configure(state="normal" if running and not self.stopping else "disabled")
+        self.open_web_button.configure(
+            state="normal" if running and not self.stopping and self.server_url else "disabled"
+        )
 
     def _poll_events(self) -> None:
         try:
@@ -448,6 +475,7 @@ class LauncherApp:
                     self._append_log(str(value))
                 elif kind == "exit":
                     self.stopping = False
+                    self.server_url = None
                     self.run_status_var.set(f"Status: Stopped (exit code {value})")
                     self.pid_var.set("PID: -")
                     self._append_log(f"llama-server exited with code {value}.")

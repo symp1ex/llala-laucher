@@ -9,7 +9,12 @@ import time
 import unittest
 
 from app_paths import resolve_app_paths
-from llama_server import build_command, default_parameter_state, detect_supported_parameters
+from llama_server import (
+    build_command,
+    build_server_url,
+    default_parameter_state,
+    detect_supported_parameters,
+)
 from model_scanner import ModelInfo, ModelScanner, model_id_for_relative
 from parameter_specs import PARAMETER_SPECS
 from preset_manager import PresetManager
@@ -130,6 +135,15 @@ class CommandTests(unittest.TestCase):
             result = detect_supported_parameters(Path(temporary) / "missing.exe")
             self.assertIsNone(result.supported_keys)
             self.assertTrue(result.error)
+
+    def test_server_url_uses_effective_address(self) -> None:
+        state = default_parameter_state()
+        state["host"] = {"enabled": True, "value": "0.0.0.0"}
+        state["port"] = {"enabled": True, "value": 9090}
+        self.assertEqual(build_server_url(state), "http://127.0.0.1:9090/")
+
+        state["host"] = {"enabled": True, "value": "::1"}
+        self.assertEqual(build_server_url(state), "http://[::1]:9090/")
 
 
 class PathTests(unittest.TestCase):
