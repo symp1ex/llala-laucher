@@ -3,12 +3,14 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+import json
 from pathlib import Path
 import re
 import subprocess
 from typing import Any, Mapping, Sequence
 
 from parameter_specs import PARAMETER_SPECS, ParameterSpec
+from web_search_settings import WebSearchSettings, normalized_searxng_url
 
 
 class CommandValidationError(ValueError):
@@ -20,6 +22,7 @@ class DetectionResult:
     help_text: str
     supported_keys: frozenset[str] | None
     error: str | None = None
+    mcp_supported: bool | None = None
 
 
 def _switch_present(help_text: str, switch: str) -> bool:
@@ -57,7 +60,11 @@ def detect_supported_parameters(
     supported = frozenset(
         spec.key for spec in specs if _switch_present(help_text, spec.support_cli)
     )
-    return DetectionResult(help_text, supported)
+    return DetectionResult(
+        help_text,
+        supported,
+        mcp_supported=_switch_present(help_text, "--mcp-servers-json"),
+    )
 
 
 def default_parameter_state(
@@ -119,6 +126,9 @@ def build_command(
     parameter_state: Mapping[str, Mapping[str, Any]],
     specs: Sequence[ParameterSpec] = PARAMETER_SPECS,
     supported_keys: frozenset[str] | set[str] | None = None,
+    web_search: WebSearchSettings | None = None,
+    mcp_command: Sequence[str] | None = None,
+    mcp_supported: bool | None = None,
 ) -> list[str]:
     """Convert a model and structured state into the sole authoritative argv."""
     if not server_path.is_file():
@@ -137,6 +147,53 @@ def build_command(
             command.append(spec.cli)
             continue
         command.extend((spec.cli, _validated_value(spec, state.get("value", spec.default))))
+
+    if web_search is not None and web_search.enabled:
+        if mcp_supported is not True:
+            if mcp_supported is False:
+                detail = "this llama-server build does not support --mcp-servers-json"
+            else:
+                detail = "support for --mcp-servers-json could not be confirmed"
+            raise CommandValidationError(f"Web search cannot be enabled: {detail}")
+        if not mcp_command:
+            raise CommandValidationError("Web search cannot be enabled: MCP launch command is missing")
+        executable = Path(mcp_command[0])
+        if not executable.is_file():
+            raise CommandValidationError(f"Web MCP executable not found: {executable}")
+        if len(mcp_command) > 1 and str(mcp_command[1]).casefold().endswith(".py"):
+            entrypoint = Path(mcp_command[1])
+            if not entrypoint.is_file():
+                raise CommandValidationError(f"Web MCP source entrypoint not found: {entrypoint}")
+        try:
+            searxng_url = normalized_searxng_url(web_search.searxng_url)
+        except ValueError as exc:
+            raise CommandValidationError(str(exc)) from exc
+        if not 1 <= web_search.max_results <= 20:
+            raise CommandValidationError("Web search results must be between 1 and 20")
+        if not 1 <= web_search.timeout <= 120:
+            raise CommandValidationError("Web search timeout must be between 1 and 120 seconds")
+        server_args = list(mcp_command[1:]) + [
+            "--searxng-url",
+            searxng_url,
+            "--max-results",
+            str(web_search.max_results),
+            "--timeout",
+            f"{web_search.timeout:g}",
+        ]
+        config = {
+            "mcpServers": {
+                "web": {
+                    "command": str(executable),
+                    "args": server_args,
+                }
+            }
+        }
+        command.extend(
+            (
+                "--mcp-servers-json",
+                json.dumps(config, ensure_ascii=False, separators=(",", ":")),
+            )
+        )
     return command
 
 

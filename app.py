@@ -38,6 +38,14 @@ from windows_integration import (
     frozen_executable_path,
     resolve_icon_path,
 )
+from web_mcp.searxng import SearxNGClient, SearxNGError
+from web_search_settings import (
+    DEFAULT_SEARXNG_URL,
+    WebSearchSettings,
+    normalized_searxng_url,
+    resolve_mcp_command,
+    web_settings_from_json,
+)
 
 
 LOGGER = logging.getLogger(__name__)
@@ -75,12 +83,14 @@ class LauncherApp:
         self.presets_by_display: dict[str, Path] = {}
         self.parameter_controls: dict[str, ParameterControl] = {}
         self.supported_keys: frozenset[str] | None = None
+        self.mcp_supported: bool | None = None
         self.preview_after_id: str | None = None
         self.closing = False
         self.quit_finished = False
         self.stopping = False
         self.server_url: str | None = None
         self.settings = self._load_settings()
+        self.web_search_settings = web_settings_from_json(self.settings.get("web_search"))
         icon_path = resolve_icon_path(paths.base_dir)
         executable_icon = frozen_executable_path()
         self.tray = TrayController(self.background_events, icon_path, executable_icon)
@@ -106,6 +116,11 @@ class LauncherApp:
         self.run_status_var = tk.StringVar(value="Status: Stopped")
         self.pid_var = tk.StringVar(value="PID: -")
         self.update_text_var = tk.StringVar(value=f"v{self.version}")
+        self.web_search_enabled_var = tk.BooleanVar(value=self.web_search_settings.enabled)
+        self.searxng_url_var = tk.StringVar(value=self.web_search_settings.searxng_url)
+        self.web_search_results_var = tk.IntVar(value=self.web_search_settings.max_results)
+        self.web_search_timeout_var = tk.DoubleVar(value=self.web_search_settings.timeout)
+        self.web_search_status_var = tk.StringVar(value="Not tested")
 
         self._build_ui()
         self._update_server_status()
@@ -168,6 +183,47 @@ class LauncherApp:
             control = ParameterControl(parent, spec, row, self._schedule_preview)
             self.parameter_controls[spec.key] = control
             category_rows[spec.category] += 1
+
+        web_search = ttk.LabelFrame(outer, text="Web search (SearXNG)", padding=6)
+        web_search.pack(fill="x", pady=(0, 8))
+        web_search.columnconfigure(2, weight=1)
+        ttk.Checkbutton(
+            web_search,
+            text="Enable",
+            variable=self.web_search_enabled_var,
+            command=self._schedule_preview,
+        ).grid(row=0, column=0, sticky="w", padx=(0, 8))
+        ttk.Label(web_search, text="URL:").grid(row=0, column=1, sticky="w")
+        url_entry = ttk.Entry(web_search, textvariable=self.searxng_url_var)
+        url_entry.grid(row=0, column=2, sticky="ew", padx=(5, 8))
+        self.web_search_test_button = ttk.Button(
+            web_search,
+            text="Test connection",
+            command=self._start_web_search_test,
+        )
+        self.web_search_test_button.grid(row=0, column=3, sticky="e")
+        ttk.Label(web_search, text="Results:").grid(row=1, column=0, sticky="w", pady=(5, 0))
+        ttk.Spinbox(
+            web_search,
+            from_=1,
+            to=20,
+            width=5,
+            textvariable=self.web_search_results_var,
+            command=self._schedule_preview,
+        ).grid(row=1, column=1, sticky="w", pady=(5, 0))
+        ttk.Label(web_search, text="Timeout (s):").grid(row=1, column=2, sticky="e", pady=(5, 0))
+        ttk.Spinbox(
+            web_search,
+            from_=1,
+            to=120,
+            width=6,
+            textvariable=self.web_search_timeout_var,
+            command=self._schedule_preview,
+        ).grid(row=1, column=3, sticky="w", padx=(5, 0), pady=(5, 0))
+        ttk.Label(web_search, textvariable=self.web_search_status_var).grid(
+            row=2, column=0, columnspan=4, sticky="w", pady=(4, 0)
+        )
+        url_entry.bind("<KeyRelease>", lambda _event: self._schedule_preview())
 
         preview_frame = ttk.LabelFrame(outer, text="Command preview", padding=6)
         preview_frame.pack(fill="x", pady=(0, 8))
@@ -339,15 +395,21 @@ class LauncherApp:
             with self.paths.settings.open("r", encoding="utf-8") as file:
                 data = json.load(file)
             return data if isinstance(data, dict) else {}
-        except (OSError, json.JSONDecodeError):
+        except (OSError, UnicodeError, json.JSONDecodeError):
             return {}
 
     def _save_settings(self) -> None:
         model = self._selected_model()
+        try:
+            web_search = self._current_web_search_settings()
+        except CommandValidationError as exc:
+            web_search = self.web_search_settings
+            self._append_log(f"Could not save invalid web search settings: {exc}")
         data = {
             "window_geometry": self.root.geometry(),
             "last_model": model.relative_path.as_posix() if model else "",
             "last_preset": self.preset_var.get(),
+            "web_search": web_search.to_json(),
         }
         try:
             with self.paths.settings.open("w", encoding="utf-8", newline="\n") as file:
@@ -355,6 +417,59 @@ class LauncherApp:
                 file.write("\n")
         except OSError as exc:
             self._append_log(f"Could not save launcher settings: {exc}")
+
+    def _current_web_search_settings(self) -> WebSearchSettings:
+        try:
+            enabled = bool(self.web_search_enabled_var.get())
+            url_text = self.searxng_url_var.get().strip()
+            url = normalized_searxng_url(url_text) if enabled else (url_text or DEFAULT_SEARXNG_URL)
+            max_results = int(self.web_search_results_var.get())
+            timeout = float(self.web_search_timeout_var.get())
+            if not 1 <= max_results <= 20:
+                raise ValueError("Search results must be between 1 and 20")
+            if not 1 <= timeout <= 120:
+                raise ValueError("Web search timeout must be between 1 and 120 seconds")
+            return WebSearchSettings(enabled, url, max_results, timeout)
+        except ValueError as exc:
+            raise CommandValidationError(str(exc)) from exc
+        except tk.TclError as exc:
+            raise CommandValidationError("Search results and timeout must be valid numbers") from exc
+
+    def _build_launcher_command(
+        self,
+        model_path: Path,
+        state: Mapping[str, Mapping[str, Any]],
+    ) -> list[str]:
+        web_settings = self._current_web_search_settings()
+        return build_command(
+            self.paths.server,
+            model_path,
+            state,
+            supported_keys=self.supported_keys,
+            web_search=web_settings,
+            mcp_command=resolve_mcp_command(self.paths.base_dir),
+            mcp_supported=self.mcp_supported,
+        )
+
+    def _start_web_search_test(self) -> None:
+        try:
+            settings = self._current_web_search_settings()
+            url = normalized_searxng_url(self.searxng_url_var.get())
+        except (CommandValidationError, ValueError) as exc:
+            self.web_search_status_var.set(f"Error: {exc}")
+            return
+        self.web_search_test_button.configure(state="disabled")
+        self.web_search_status_var.set("Testing JSON Search API…")
+
+        def worker() -> None:
+            try:
+                SearxNGClient(url, settings.timeout).test_connection()
+                result: object = None
+            except (SearxNGError, ValueError) as exc:
+                result = exc
+            self.background_events.put(("web_search_test", result))
+
+        threading.Thread(target=worker, daemon=True).start()
 
     def _update_server_status(self) -> None:
         if self.paths.server.is_file():
@@ -540,12 +655,7 @@ class LauncherApp:
                 preview = f"Select a GGUF model. Models directory: {self.paths.models}"
             else:
                 state, warnings = self._state_for_command()
-                command = build_command(
-                    self.paths.server,
-                    model.path,
-                    state,
-                    supported_keys=self.supported_keys,
-                )
+                command = self._build_launcher_command(model.path, state)
                 preview = format_windows_command(command)
                 omitted = self._unsupported_enabled_keys(state)
                 notes = warnings + ([f"Unsupported selected parameters omitted: {', '.join(omitted)}"] if omitted else [])
@@ -574,12 +684,7 @@ class LauncherApp:
             return
         try:
             state, warnings = self._state_for_command()
-            command = build_command(
-                self.paths.server,
-                model.path,
-                state,
-                supported_keys=self.supported_keys,
-            )
+            command = self._build_launcher_command(model.path, state)
             server_url = build_server_url(state, self.supported_keys)
         except (CommandValidationError, PresetError) as exc:
             messagebox.showerror("Cannot start llama-server", str(exc))
@@ -686,6 +791,12 @@ class LauncherApp:
             self._handle_update_check_result(value)
         elif kind == "update_install":
             self._handle_update_install_result(value)
+        elif kind == "web_search_test":
+            self.web_search_test_button.configure(state="normal")
+            if value is None:
+                self.web_search_status_var.set("OK — JSON Search API is available")
+            else:
+                self.web_search_status_var.set(f"Error: {value}")
         elif kind == "tray_open":
             self._show_main_window()
         elif kind == "tray_quit":
@@ -727,6 +838,7 @@ class LauncherApp:
         result = value if isinstance(value, DetectionResult) else DetectionResult("", None, "Invalid result")
         self.detect_button.configure(state="normal")
         self.supported_keys = result.supported_keys
+        self.mcp_supported = result.mcp_supported
         self._apply_supported_state()
         if result.error:
             self._append_log(
@@ -734,8 +846,10 @@ class LauncherApp:
             )
         else:
             unsupported = len(PARAMETER_SPECS) - len(result.supported_keys or ())
+            mcp_status = "supported" if result.mcp_supported else "not supported"
             self._append_log(
-                f"CLI detection complete: {len(result.supported_keys or ())} supported, {unsupported} unsupported."
+                f"CLI detection complete: {len(result.supported_keys or ())} supported, "
+                f"{unsupported} unsupported; --mcp-servers-json {mcp_status}."
             )
 
     def _replace_text(self, widget: tk.Text, text: str) -> None:

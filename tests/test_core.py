@@ -308,6 +308,15 @@ class CommandTests(unittest.TestCase):
             self.assertIn("repeat_penalty", result.supported_keys or ())
             self.assertNotIn("min_p", result.supported_keys or ())
 
+    def test_mcp_capability_detection_is_independent_of_parameter_specs(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            server = Path(temporary) / "llama-server.exe"
+            server.touch()
+            with patch("llama_server.subprocess.run") as run:
+                run.return_value.stdout = "--host --mcp-servers-json"
+                result = detect_supported_parameters(server)
+            self.assertTrue(result.mcp_supported)
+
     def test_missing_server_detection_is_non_fatal(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
             result = detect_supported_parameters(Path(temporary) / "missing.exe")

@@ -32,6 +32,8 @@ AGENTS.md
 tester-prv.go
 
 __pycache__/
+/build/
+/dist/
 .idea/
 .venv/
 logs/

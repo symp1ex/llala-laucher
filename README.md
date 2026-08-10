@@ -7,6 +7,7 @@
 - Windows 10/11;
 - Python 3.13 с `tkinter`;
 - `infi.systray==0.1.12.1` из `requirements.txt`;
+- `beautifulsoup4` для извлечения читаемого HTML и pure-Python `pypdf` для PDF;
 - совместимая Windows-сборка llama.cpp;
 - одна или несколько моделей GGUF.
 
@@ -31,6 +32,9 @@ llala-laucher/
 ├─ preset_manager.py
 ├─ server_process.py
 ├─ widgets.py
+├─ web-mcp.py                 # отдельная stdio MCP точка входа
+├─ web_mcp/                   # SearXNG, web_fetch и JSON-RPC protocol
+├─ web_search_settings.py
 ├─ requirements.txt
 ├─ icon.ico                    # окно, taskbar, Alt+Tab и tray
 ├─ laucher-settings.json       # создается после закрытия
@@ -42,6 +46,21 @@ llala-laucher/
    │  └─ Model-B/model.gguf
    └─ preset/
       └─ <model-id>/*.json
+```
+
+В готовом переносимом комплекте рядом с GUI также находится отдельный MCP EXE:
+
+```text
+portable/
+├─ llala-laucher.exe
+├─ icon.ico                   # необязательный sidecar
+├─ mcp/
+│  └─ web-mcp.exe
+└─ llama/
+   ├─ llama-server.exe
+   ├─ *.dll
+   ├─ models/
+   └─ preset/
 ```
 
 При запуске из исходников все пути вычисляются от каталога launcher. В frozen EXE рабочим корнем становится каталог самого EXE. Текущий каталог процесса (`%CD%`) не используется.
@@ -78,15 +97,81 @@ Tray регистрирует Unicode-сообщение `TaskbarCreated` и п�
 
 Основной файл `icon.ico` используется через `iconbitmap(default=...)` и `WM_SETICON` для titlebar, taskbar, Alt+Tab и thumbnail preview, а также для notification icon. До создания `tk.Tk()` процесс получает постоянный AppUserModelID `llala.launcher`.
 
-Минимальная команда сборки на Windows:
+Соберите GUI и MCP из корня проекта. MCP намеренно является console-subsystem EXE: его
+stdin/stdout остаются рабочим MCP transport. При штатном запуске он наследует скрытый
+процесс `llama-server`, который launcher создаёт с `CREATE_NO_WINDOW`, поэтому отдельное
+консольное окно не появляется. Не собирайте MCP с `--noconsole`: в таком EXE стандартные
+потоки могут быть недоступны.
 
 ```powershell
-python -m PyInstaller --onefile --noconsole --name llala-laucher --icon=icon.ico --add-data "icon.ico;." llala-laucher.py
+python -m PyInstaller --clean --noconfirm --onefile --noconsole --name llala-laucher --icon=icon.ico --add-data "icon.ico;." --distpath dist llala-laucher.py
+python -m PyInstaller --clean --noconfirm --onefile --console --name web-mcp --distpath dist/mcp web-mcp.py
 ```
 
 В source-режиме выбирается `<project>/icon.ico`. В frozen-режиме сначала проверяется `icon.ico` рядом с EXE, затем data-файл `icon.ico` внутри `sys._MEIPASS`, создаваемый указанным `--add-data` (в Windows разделитель source/destination — `;`). Если standalone ICO отсутствует, и главное окно, и tray пытаются извлечь icon resource из `sys.executable`, добавленный параметром `--icon=icon.ico`; извлечённые Win32 handles освобождаются при завершении.
 
 Каталоги `llama/`, `models/` и `preset/` остаются внешними и должны находиться рядом с frozen EXE согласно структуре выше.
+
+В source-режиме launcher запускает текущий `sys.executable` и абсолютный путь к
+`web-mcp.py`. Во frozen-режиме используется только соседний `mcp/web-mcp.exe`.
+Аргументы передаются списком без shell; inline MCP JSON строится `json.dumps`, поэтому
+пробелы, обратные слеши и кавычки в Windows-путях не требуют ручного escaping.
+
+## Web search через SearXNG
+
+Launcher не устанавливает и не управляет Docker или SearXNG. В существующем экземпляре
+SearXNG разрешите JSON output в `settings.yml` и перезапустите сам SearXNG обычным для
+вашей установки способом:
+
+```yaml
+search:
+  formats:
+    - html
+    - json
+```
+
+В launcher откройте компактный блок **Web search (SearXNG)**, укажите базовый URL,
+например `http://127.0.0.1:8080` или `http://192.168.1.50:8080`, и нажмите
+**Test connection**. Проверка выполняется в worker thread и действительно вызывает
+`GET /search?...&format=json`; tkinter не блокируется. После успешной проверки включите
+checkbox. Значения по умолчанию: функция выключена, 8 результатов и timeout 15 секунд.
+Они сохраняются в `laucher-settings.json`; старый, частичный или повреждённый файл
+загружается с безопасными defaults.
+
+При запуске добавляется Cursor-compatible конфигурация:
+
+```json
+{"mcpServers":{"web":{"command":"...","args":["...","--searxng-url","http://127.0.0.1:8080","--max-results","8","--timeout","15"]}}}
+```
+
+Передача выполняется через `--mcp-servers-json`. Launcher ищет точное имя switch в
+выводе `llama-server.exe --help`. Если поиск включён, а флаг отсутствует, help не удалось
+прочитать или `mcp/web-mcp.exe` отсутствует, preview и Start показывают явную локальную
+ошибку — настройка не отбрасывается молча. Для ручной диагностики выполните:
+
+```powershell
+llama\llama-server.exe --help | Select-String mcp-servers-json
+```
+
+Сетевой сбой SearXNG при старте не останавливает GUI или MCP: `web_search` возвращает
+модели типизированную временную ошибку и может быть вызван повторно после восстановления
+сети. Конкретные поисковые движки не выбираются launcher или моделью; включение,
+агрегация и fallback движков полностью задаются конфигурацией SearXNG. В результатах
+сохраняется поле `engines`, если его вернул SearXNG.
+
+MCP предоставляет два инструмента:
+
+- `web_search` — нормализованная и ограниченная выдача SearXNG с query, language,
+  page (1–50), time range и категориями general/news;
+- `web_fetch` — HTML, plain text, JSON и PDF без browser engine.
+
+`web_fetch` разрешает только публичные HTTP(S) адреса без credentials, проверяет все
+DNS-ответы до запроса и на каждом redirect, блокирует loopback, private, link-local,
+multicast и unspecified адреса, ограничивает redirects, Content-Length, реально
+прочитанные bytes и возвращаемый текст. HTML очищается от script/style/navigation и
+boilerplate, PDF читается максимум по 50 страницам. Ответ явно маркируется как
+external/untrusted content. JavaScript-only страницы, авторизация, CAPTCHA и browser
+automation не поддерживаются и возвращают честную ошибку.
 
 ## Модели и model ID
 
@@ -147,7 +232,9 @@ Preview и реальный запуск используют одну функ�
 
 ```powershell
 python -m compileall .
-python -m unittest discover -v
+python -m unittest discover -s tests -v
 ```
 
-Тесты покрывают пустой каталог моделей, рекурсивный scan, model ID, preset round-trip, отсутствие EXE, исключение disabled/unsupported аргументов, эквивалентность `original-bat.json` исходному BAT, queue-only tray callbacks, X/Open/Quit lifecycle, идемпотентный Quit, ожидание server `exit`, повторный `NIM_ADD` и source/frozen icon resolution.
+Тесты также используют только локальный mock HTTP server и покрывают MCP argv/config,
+source/frozen resolution, настройки, SearXNG query/error paths, HTML/plain/JSON/PDF,
+лимиты, SSRF на исходном URL и redirect, MCP handshake/list/call и чистоту stdout.
