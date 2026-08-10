@@ -3,12 +3,15 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+import json
+import os
 from pathlib import Path
 import re
 import subprocess
 from typing import Any, Mapping, Sequence
 
 from parameter_specs import PARAMETER_SPECS, ParameterSpec
+from web_search_settings import WebSearchSettings, WebSearchSettingsError, validate_web_search_settings
 
 
 class CommandValidationError(ValueError):
@@ -20,6 +23,7 @@ class DetectionResult:
     help_text: str
     supported_keys: frozenset[str] | None
     error: str | None = None
+    supports_mcp_servers_json: bool = False
 
 
 def _switch_present(help_text: str, switch: str) -> bool:
@@ -57,7 +61,11 @@ def detect_supported_parameters(
     supported = frozenset(
         spec.key for spec in specs if _switch_present(help_text, spec.support_cli)
     )
-    return DetectionResult(help_text, supported)
+    return DetectionResult(
+        help_text,
+        supported,
+        supports_mcp_servers_json=_switch_present(help_text, "--mcp-servers-json"),
+    )
 
 
 def default_parameter_state(
@@ -119,6 +127,10 @@ def build_command(
     parameter_state: Mapping[str, Mapping[str, Any]],
     specs: Sequence[ParameterSpec] = PARAMETER_SPECS,
     supported_keys: frozenset[str] | set[str] | None = None,
+    *,
+    web_search: WebSearchSettings | None = None,
+    web_mcp_path: Path | None = None,
+    supports_mcp_servers_json: bool = False,
 ) -> list[str]:
     """Convert a model and structured state into the sole authoritative argv."""
     if not server_path.is_file():
@@ -137,7 +149,70 @@ def build_command(
             command.append(spec.cli)
             continue
         command.extend((spec.cli, _validated_value(spec, state.get("value", spec.default))))
+    if web_search is not None and web_search.enabled:
+        if not supports_mcp_servers_json:
+            raise CommandValidationError(
+                "Web search is enabled, but this llama-server does not support --mcp-servers-json"
+            )
+        if web_mcp_path is None or not web_mcp_path.is_file():
+            expected = web_mcp_path or Path("mcp") / "web-mcp.exe"
+            raise CommandValidationError(f"Web search MCP executable not found: {expected}")
+        try:
+            validated = validate_web_search_settings(
+                enabled=True,
+                url=web_search.url,
+                max_results=web_search.max_results,
+                timeout=web_search.timeout,
+            )
+        except WebSearchSettingsError as exc:
+            raise CommandValidationError(f"Web search: {exc}") from exc
+        config = {
+            "mcpServers": {
+                "web-search": {
+                    "command": str(web_mcp_path.resolve()),
+                    "args": [
+                        "--searxng-url",
+                        validated.url,
+                        "--max-results",
+                        str(validated.max_results),
+                        "--timeout",
+                        str(validated.timeout),
+                    ],
+                    "timeout_ms": int(validated.timeout * 1000) + 5_000,
+                }
+            }
+        }
+        command.extend(
+            ("--mcp-servers-json", json.dumps(config, ensure_ascii=False, separators=(",", ":")))
+        )
     return command
+
+
+def validate_web_mcp_executable(path: Path, timeout: float = 5.0) -> None:
+    """Fail before starting llama-server when the configured MCP EXE cannot run."""
+    if not path.is_file():
+        raise CommandValidationError(f"Web search MCP executable not found: {path}")
+    creation_flags = subprocess.CREATE_NO_WINDOW if os.name == "nt" else 0
+    try:
+        completed = subprocess.run(
+            [str(path), "--check"],
+            cwd=str(path.parent),
+            stdin=subprocess.DEVNULL,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            check=False,
+            timeout=timeout,
+            shell=False,
+            creationflags=creation_flags,
+        )
+    except (OSError, subprocess.SubprocessError) as exc:
+        raise CommandValidationError(f"Could not start Web search MCP executable: {exc}") from exc
+    if completed.returncode != 0:
+        detail = completed.stderr.decode("utf-8", errors="replace").strip()
+        suffix = f": {detail}" if detail else ""
+        raise CommandValidationError(
+            f"Web search MCP executable self-check failed (exit {completed.returncode}){suffix}"
+        )
 
 
 def format_windows_command(command: Sequence[str]) -> str:

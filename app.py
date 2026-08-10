@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import logging
+from dataclasses import replace
 from pathlib import Path
 import queue
 import re
@@ -23,6 +24,7 @@ from llama_server import (
     default_parameter_state,
     detect_supported_parameters,
     format_windows_command,
+    validate_web_mcp_executable,
 )
 from model_scanner import ModelInfo, ModelScanner
 from parameter_specs import CATEGORIES, PARAMETER_SPECS, SPEC_BY_KEY
@@ -38,6 +40,13 @@ from windows_integration import (
     frozen_executable_path,
     resolve_icon_path,
 )
+from web_search_settings import (
+    ConnectionTestResult,
+    WebSearchSettings,
+    WebSearchSettingsError,
+    test_searxng_connection,
+    validate_web_search_settings,
+)
 
 
 LOGGER = logging.getLogger(__name__)
@@ -47,7 +56,7 @@ class LauncherApp:
     PREVIEW_DELAY_MS = 250
     UPDATE_SHUTDOWN_DELAY_MS = 2_000
     WINDOW_OUTER_WIDTH = 900
-    WINDOW_OUTER_HEIGHT = 900
+    WINDOW_OUTER_HEIGHT = 940
 
     _UPDATE_TRANSITIONS = {
         UpdateState.IDLE: frozenset({UpdateState.CHECKING}),
@@ -75,12 +84,17 @@ class LauncherApp:
         self.presets_by_display: dict[str, Path] = {}
         self.parameter_controls: dict[str, ParameterControl] = {}
         self.supported_keys: frozenset[str] | None = None
+        self.supports_mcp_servers_json = False
         self.preview_after_id: str | None = None
         self.closing = False
         self.quit_finished = False
         self.stopping = False
         self.server_url: str | None = None
         self.settings = self._load_settings()
+        self.web_search_settings = WebSearchSettings.from_mapping(
+            self.settings.get("web_search")
+        )
+        self.web_search_window: tk.Toplevel | None = None
         icon_path = resolve_icon_path(paths.base_dir)
         executable_icon = frozen_executable_path()
         self.tray = TrayController(self.background_events, icon_path, executable_icon)
@@ -105,6 +119,9 @@ class LauncherApp:
         self.use_preset_var = tk.BooleanVar(value=False)
         self.run_status_var = tk.StringVar(value="Status: Stopped")
         self.pid_var = tk.StringVar(value="PID: -")
+        self.web_search_enabled_var = tk.BooleanVar(
+            value=self.web_search_settings.enabled
+        )
         self.update_text_var = tk.StringVar(value=f"v{self.version}")
 
         self._build_ui()
@@ -214,7 +231,7 @@ class LauncherApp:
         ttk.Label(actions, textvariable=self.run_status_var).grid(
             row=0,
             column=7,
-            sticky="e",
+            sticky="w",
         )
         ttk.Label(actions, textvariable=self.pid_var).grid(
             row=0,
@@ -222,6 +239,24 @@ class LauncherApp:
             sticky="e",
             padx=(10, 0),
         )
+
+        web_search_row = ttk.Frame(actions)
+        web_search_row.grid(row=1, column=7, columnspan=2, sticky="w", pady=(5, 0))
+        self.web_search_check = ttk.Checkbutton(
+            web_search_row,
+            text="Web search (SearXNG)",
+            variable=self.web_search_enabled_var,
+            command=self._on_web_search_toggled,
+        )
+        self.web_search_check.pack(side="left")
+        self.web_search_settings_button = ttk.Button(
+            web_search_row,
+            text="⚙",
+            width=3,
+            command=self._open_web_search_settings,
+        )
+        self.web_search_settings_button.pack(side="left", padx=(5, 0))
+        Tooltip(self.web_search_settings_button, "Configure the external SearXNG server.")
 
         output_frame = ttk.LabelFrame(outer, text="Server output", padding=6)
         output_frame.pack(fill="both", expand=False)
@@ -348,6 +383,11 @@ class LauncherApp:
             "window_geometry": self.root.geometry(),
             "last_model": model.relative_path.as_posix() if model else "",
             "last_preset": self.preset_var.get(),
+            "web_search": getattr(
+                self,
+                "web_search_settings",
+                WebSearchSettings(),
+            ).to_mapping(),
         }
         try:
             with self.paths.settings.open("w", encoding="utf-8", newline="\n") as file:
@@ -505,9 +545,157 @@ class LauncherApp:
         self._reset_parameters(safe_profile=True)
         self._append_log("Parameters reset to the safe universal profile.")
 
+    def _on_web_search_toggled(self) -> None:
+        self.web_search_settings = replace(
+            self.web_search_settings,
+            enabled=bool(self.web_search_enabled_var.get()),
+        )
+        self._save_settings()
+        self._schedule_preview()
+
+    def _open_web_search_settings(self) -> None:
+        window = self.web_search_window
+        if window is not None and bool(window.winfo_exists()):
+            window.deiconify()
+            window.lift()
+            window.focus_force()
+            return
+        self.web_search_window = self._create_web_search_settings_window()
+
+    def _create_web_search_settings_window(self) -> tk.Toplevel:
+        window = tk.Toplevel(self.root)
+        window.title("Web search (SearXNG)")
+        window.resizable(False, False)
+        window.transient(self.root)
+        container = ttk.Frame(window, padding=12)
+        container.grid(row=0, column=0, sticky="nsew")
+        container.columnconfigure(0, weight=1)
+
+        self.web_search_url_var = tk.StringVar(value=self.web_search_settings.url)
+        self.web_search_results_var = tk.StringVar(
+            value=str(self.web_search_settings.max_results)
+        )
+        self.web_search_timeout_var = tk.StringVar(
+            value=str(self.web_search_settings.timeout)
+        )
+        self.web_search_test_status_var = tk.StringVar(value="Not tested")
+
+        ttk.Label(container, text="URL:").grid(row=0, column=0, sticky="w")
+        url_entry = ttk.Entry(container, textvariable=self.web_search_url_var, width=42)
+        url_entry.grid(row=1, column=0, sticky="ew", pady=(2, 9))
+        self.web_search_test_button = ttk.Button(
+            container,
+            text="Test connection",
+            command=self._start_searxng_test,
+        )
+        self.web_search_test_button.grid(row=2, column=0, sticky="w", pady=(0, 12))
+
+        ttk.Label(container, text="Results:").grid(row=3, column=0, sticky="w")
+        results = ttk.Spinbox(
+            container,
+            from_=1,
+            to=20,
+            width=8,
+            textvariable=self.web_search_results_var,
+        )
+        results.grid(row=4, column=0, sticky="w", pady=(2, 9))
+        ttk.Label(container, text="Timeout (s):").grid(row=5, column=0, sticky="w")
+        timeout = ttk.Entry(
+            container,
+            textvariable=self.web_search_timeout_var,
+            width=12,
+        )
+        timeout.grid(row=6, column=0, sticky="w", pady=(2, 12))
+        ttk.Label(container, text="Status:").grid(row=7, column=0, sticky="w")
+        ttk.Label(
+            container,
+            textvariable=self.web_search_test_status_var,
+            wraplength=315,
+        ).grid(row=8, column=0, sticky="w", pady=(2, 0))
+        self.web_search_save_button = ttk.Button(
+            container,
+            text="Save",
+            command=self._save_web_search_settings,
+        )
+        self.web_search_save_button.grid(row=9, column=0, sticky="e", pady=(12, 0))
+        window.protocol("WM_DELETE_WINDOW", self._close_web_search_settings)
+        window.bind("<Destroy>", self._on_web_search_window_destroyed, add=True)
+        url_entry.focus_set()
+        return window
+
+    def _read_web_search_dialog_settings(
+        self, *, show_error: bool
+    ) -> WebSearchSettings | None:
+        try:
+            settings = validate_web_search_settings(
+                enabled=bool(self.web_search_enabled_var.get()),
+                url=self.web_search_url_var.get(),
+                max_results=self.web_search_results_var.get(),
+                timeout=self.web_search_timeout_var.get(),
+            )
+        except WebSearchSettingsError as exc:
+            self.web_search_test_status_var.set(f"Error — {exc}")
+            if show_error:
+                messagebox.showerror("Web search settings", str(exc), parent=self.web_search_window)
+            return None
+        return settings
+
+    def _save_web_search_settings(self) -> None:
+        settings = self._read_web_search_dialog_settings(show_error=True)
+        if settings is None:
+            return
+        changed = settings != self.web_search_settings
+        self.web_search_settings = settings
+        self._save_settings()
+        if changed and settings.enabled:
+            self._schedule_preview()
+        self.web_search_url_var.set(settings.url)
+        self.web_search_results_var.set(str(settings.max_results))
+        self.web_search_timeout_var.set(str(settings.timeout))
+        self.web_search_test_status_var.set("Settings saved")
+
+    def _start_searxng_test(self) -> None:
+        settings = self._read_web_search_dialog_settings(show_error=True)
+        if settings is None:
+            return
+        self.web_search_test_button.configure(state="disabled")
+        self.web_search_test_status_var.set("Checking…")
+
+        def worker() -> None:
+            result = test_searxng_connection(settings)
+            self.background_events.put(("searxng_test", result))
+
+        threading.Thread(target=worker, daemon=True).start()
+
+    def _handle_searxng_test_result(self, value: object) -> None:
+        result = (
+            value
+            if isinstance(value, ConnectionTestResult)
+            else ConnectionTestResult(False, "Error — invalid test result")
+        )
+        window = self.web_search_window
+        if window is None or not bool(window.winfo_exists()):
+            return
+        self.web_search_test_button.configure(state="normal")
+        self.web_search_test_status_var.set(result.message)
+        if result.detail:
+            LOGGER.warning("SearXNG connection test: %s", result.detail)
+
+    def _close_web_search_settings(self) -> None:
+        window = self.web_search_window
+        if window is None:
+            return
+        window.destroy()
+        self.web_search_window = None
+
+    def _on_web_search_window_destroyed(self, event: tk.Event[Any]) -> None:
+        if event.widget is self.web_search_window:
+            self.web_search_window = None
+
     def _start_capability_detection(self) -> None:
         if not self.paths.server.is_file():
             self.supported_keys = None
+            self.supports_mcp_servers_json = False
             self._apply_supported_state()
             self._update_buttons()
             return
@@ -545,6 +733,9 @@ class LauncherApp:
                     model.path,
                     state,
                     supported_keys=self.supported_keys,
+                    web_search=self.web_search_settings,
+                    web_mcp_path=self.paths.web_mcp,
+                    supports_mcp_servers_json=self.supports_mcp_servers_json,
                 )
                 preview = format_windows_command(command)
                 omitted = self._unsupported_enabled_keys(state)
@@ -579,8 +770,13 @@ class LauncherApp:
                 model.path,
                 state,
                 supported_keys=self.supported_keys,
+                web_search=self.web_search_settings,
+                web_mcp_path=self.paths.web_mcp,
+                supports_mcp_servers_json=self.supports_mcp_servers_json,
             )
             server_url = build_server_url(state, self.supported_keys)
+            if self.web_search_settings.enabled:
+                validate_web_mcp_executable(self.paths.web_mcp)
         except (CommandValidationError, PresetError) as exc:
             messagebox.showerror("Cannot start llama-server", str(exc))
             return
@@ -686,6 +882,8 @@ class LauncherApp:
             self._handle_update_check_result(value)
         elif kind == "update_install":
             self._handle_update_install_result(value)
+        elif kind == "searxng_test":
+            self._handle_searxng_test_result(value)
         elif kind == "tray_open":
             self._show_main_window()
         elif kind == "tray_quit":
@@ -727,6 +925,7 @@ class LauncherApp:
         result = value if isinstance(value, DetectionResult) else DetectionResult("", None, "Invalid result")
         self.detect_button.configure(state="normal")
         self.supported_keys = result.supported_keys
+        self.supports_mcp_servers_json = result.supports_mcp_servers_json
         self._apply_supported_state()
         if result.error:
             self._append_log(

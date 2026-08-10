@@ -17,6 +17,7 @@ internal/gui/web/dist/
 logs/
 /updater/
 userdata/
+build/
 .codegraph/
 .skills/
 rules/

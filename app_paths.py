@@ -23,6 +23,7 @@ class AppPaths:
     models: Path
     presets: Path
     settings: Path
+    web_mcp: Path
     using_development_fallback: bool
 
 
@@ -53,5 +54,6 @@ def resolve_app_paths(
         models=llama_root / "models",
         presets=llama_root / "preset",
         settings=base_dir / "laucher-settings.json",
+        web_mcp=base_dir / "mcp" / "web-mcp.exe",
         using_development_fallback=using_fallback,
     )
