@@ -14,6 +14,7 @@ import (
 	"github.com/modelcontextprotocol/go-sdk/mcp"
 
 	"llala-launcher/mcp/internal/fetch"
+	"llala-launcher/mcp/internal/research"
 	"llala-launcher/mcp/internal/search"
 	"llala-launcher/mcp/internal/textutil"
 )
@@ -32,9 +33,10 @@ func (f *fakeSearch) Search(_ context.Context, params search.Params) (search.Res
 }
 
 type fakeFetch struct {
-	url   string
-	query string
-	err   error
+	url     string
+	query   string
+	options fetch.Options
+	err     error
 }
 
 func (f *fakeFetch) Fetch(_ context.Context, value string, query ...string) (fetch.Result, error) {
@@ -46,6 +48,24 @@ func (f *fakeFetch) Fetch(_ context.Context, value string, query ...string) (fet
 		return fetch.Result{}, f.err
 	}
 	return fetch.Result{SourceURL: value, FinalURL: value, ContentType: "text/plain", Content: "page"}, nil
+}
+
+func (f *fakeFetch) FetchWithOptions(_ context.Context, value string, options fetch.Options) (fetch.Result, error) {
+	f.url = value
+	f.query = options.Query
+	f.options = options
+	if f.err != nil {
+		return fetch.Result{}, f.err
+	}
+	result := fetch.Result{SourceURL: value, FinalURL: value, ContentType: "text/plain", Content: "page"}
+	if options.MaxCharacters != 0 {
+		result.AppliedMaxCharacters = options.MaxCharacters
+	}
+	if options.MetadataOnly {
+		result.Content = ""
+		result.SelectionMode = "metadata_only"
+	}
+	return result, nil
 }
 
 func connect(t *testing.T, searcher Searcher, fetcher Fetcher) (*mcp.ClientSession, func()) {
@@ -101,12 +121,12 @@ func TestInitializeListPingAndCalls(t *testing.T) {
 			t.Fatalf("web_search description lacks %q: %q", required, searchDescription)
 		}
 	}
-	for _, required := range []string{"dateevidence", "dateconfidence", "unverified", "external/untrusted", "do not prove"} {
+	for _, required := range []string{"dateevidence", "dateconfidence", "unverified", "external/untrusted", "do not prove", "metadata_only=true", "small max_chars", "do not automatically"} {
 		if !strings.Contains(fetchDescription, required) {
 			t.Fatalf("web_fetch description lacks %q: %q", required, fetchDescription)
 		}
 	}
-	for _, required := range []string{"last n hours", "bounded", "date conflicts", "distinctdomains", "not a claim", "not a generated summary"} {
+	for _, required := range []string{"last n hours", "bounded", "date conflicts", "distinctdomains", "not a claim", "not a generated summary", "response_mode=standard", "rejectedcounts", "outputbudget"} {
 		if !strings.Contains(researchDescription, required) {
 			t.Fatalf("web_news_research description lacks %q: %q", required, researchDescription)
 		}
@@ -137,12 +157,17 @@ func TestInitializeListPingAndCalls(t *testing.T) {
 	}
 	researchResult, err := session.CallTool(context.Background(), &mcp.CallToolParams{
 		Name: "web_news_research", Arguments: map[string]any{
-			"queries": []any{"current news"}, "freshness_hours": 24, "max_candidates": 3,
+			"queries": []any{"current news"}, "freshness_hours": 24, "max_candidates": 3, "response_mode": "deep",
 		},
 	})
 	if err != nil || researchResult.IsError || !strings.Contains(researchResult.Content[0].(*mcp.TextContent).Text, "missing_verified_date") ||
 		searcher.params.Category != "news" || searcher.params.TimeRange != "day" {
 		t.Fatalf("web_news_research failed: %+v %v params=%+v", researchResult, err, searcher.params)
+	}
+	var researchDecoded research.Response
+	if err := json.Unmarshal([]byte(researchResult.Content[0].(*mcp.TextContent).Text), &researchDecoded); err != nil ||
+		researchDecoded.ResponseMode != "deep" || researchDecoded.AppliedLimits.MaxCandidates != 3 {
+		t.Fatalf("research options were not forwarded: %+v, %v", researchDecoded, err)
 	}
 }
 
@@ -155,6 +180,28 @@ func TestFetchWithoutQueryRemainsBackwardCompatible(t *testing.T) {
 	})
 	if err != nil || result.IsError || fetcher.query != "" {
 		t.Fatalf("legacy web_fetch(url) failed: %+v %v", result, err)
+	}
+}
+
+func TestServerForwardsFetchSizeAndMetadataOptions(t *testing.T) {
+	fetcher := &fakeFetch{}
+	session, closeSession := connect(t, &fakeSearch{}, fetcher)
+	defer closeSession()
+	result, err := session.CallTool(context.Background(), &mcp.CallToolParams{
+		Name: "web_fetch", Arguments: map[string]any{
+			"url": "https://example.com/article", "query": "fact", "max_chars": 4000,
+		},
+	})
+	if err != nil || result.IsError || fetcher.options.Query != "fact" || fetcher.options.MaxCharacters != 4000 || fetcher.options.MetadataOnly {
+		t.Fatalf("max_chars options were not forwarded: %+v result=%+v err=%v", fetcher.options, result, err)
+	}
+	result, err = session.CallTool(context.Background(), &mcp.CallToolParams{
+		Name: "web_fetch", Arguments: map[string]any{
+			"url": "https://example.com/article", "metadata_only": true,
+		},
+	})
+	if err != nil || result.IsError || !fetcher.options.MetadataOnly {
+		t.Fatalf("metadata_only was not forwarded: %+v result=%+v err=%v", fetcher.options, result, err)
 	}
 }
 
@@ -204,6 +251,10 @@ func TestStrictInputSchemaRejectsInvalidCalls(t *testing.T) {
 		{},
 		{"url": "https://example.com", "query": ""},
 		{"url": "https://example.com", "query": 42},
+		{"url": "https://example.com", "max_chars": 255},
+		{"url": "https://example.com", "max_chars": 48001},
+		{"url": "https://example.com", "metadata_only": true, "query": "fact"},
+		{"url": "https://example.com", "metadata_only": true, "max_chars": 1000},
 		{"url": "https://example.com", "unknown": true},
 	} {
 		result, err := session.CallTool(context.Background(), &mcp.CallToolParams{Name: "web_fetch", Arguments: arguments})

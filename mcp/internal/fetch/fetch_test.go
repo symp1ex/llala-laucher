@@ -246,6 +246,101 @@ func TestFetchRedirectFinalURLAndLimit(t *testing.T) {
 	}
 }
 
+func TestFetchMaxCharactersUsesUnicodeBoundariesAndAppliedLimit(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "text/plain; charset=utf-8")
+		_, _ = io.WriteString(w, strings.Repeat("Привет, мир. ", 100))
+	}))
+	defer server.Close()
+	result, err := localFetcher(server).FetchWithOptions(context.Background(), server.URL, Options{MaxCharacters: 256})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.AppliedMaxCharacters != 256 || result.ReturnedCharacters > 256 || !result.Truncated || !utf8.ValidString(result.Content) {
+		t.Fatalf("Unicode max_chars was not enforced: %+v", result)
+	}
+}
+
+func TestFetchMaxCharactersCannotExceedConfiguredOrHardLimits(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "text/plain")
+		_, _ = io.WriteString(w, strings.Repeat("bounded text. ", 10_000))
+	}))
+	defer server.Close()
+	fetcher := localFetcher(server)
+	fetcher.SetLimits(defaultMaxResponse, 300)
+	configured, err := fetcher.FetchWithOptions(context.Background(), server.URL, Options{MaxCharacters: 1_000})
+	if err != nil || configured.AppliedMaxCharacters != 300 || configured.ReturnedCharacters > 300 {
+		t.Fatalf("configured max was not applied: %+v, %v", configured, err)
+	}
+	fetcher.SetLimits(defaultMaxResponse, 1_000_000)
+	hard, err := fetcher.FetchWithOptions(context.Background(), server.URL, Options{MaxCharacters: hardMaxText})
+	if err != nil || hard.AppliedMaxCharacters != hardMaxText || hard.ReturnedCharacters > hardMaxText {
+		t.Fatalf("hard max was not applied: %+v, %v", hard, err)
+	}
+}
+
+func TestFetchWithoutMaxCharactersPreservesLegacySelection(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "text/plain")
+		_, _ = io.WriteString(w, strings.Repeat("legacy behavior. ", 3_000))
+	}))
+	defer server.Close()
+	fetcher := localFetcher(server)
+	legacy, err := fetcher.Fetch(context.Background(), server.URL)
+	if err != nil {
+		t.Fatal(err)
+	}
+	options, err := fetcher.FetchWithOptions(context.Background(), server.URL, Options{})
+	if err != nil || legacy.Content != options.Content || legacy.SelectionMode != options.SelectionMode ||
+		legacy.AppliedMaxCharacters != defaultMaxText {
+		t.Fatalf("legacy behavior changed: legacy=%+v options=%+v err=%v", legacy, options, err)
+	}
+}
+
+func TestFetchMetadataOnlyHTMLReturnsMetadataWithoutReadableText(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "text/html; charset=utf-8")
+		_, _ = io.WriteString(w, `<html><head><link rel="canonical" href="/canonical"><meta property="og:site_name" content="Publisher"><meta name="author" content="Alice"><meta property="article:published_time" content="2026-08-11T08:00:00Z"></head><body><script>onlyScript()</script></body></html>`)
+	}))
+	defer server.Close()
+	result, err := localFetcher(server).FetchWithOptions(context.Background(), server.URL+"/empty", Options{MetadataOnly: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.Content != "" || result.SelectionMode != "metadata_only" || result.ReturnedCharacters != 0 ||
+		result.ReturnedBytes != 0 || result.ApproximateTokens != 0 || result.ExtractedCharacters != 0 ||
+		result.CanonicalURL != server.URL+"/canonical" || result.Publisher != "Publisher" ||
+		len(result.Authors) != 1 || result.PublishedAt != "2026-08-11T08:00:00Z" || len(result.DateEvidence) != 1 {
+		t.Fatalf("metadata-only HTML result is incomplete: %+v", result)
+	}
+}
+
+func TestFetchMetadataOnlyNonHTMLReturnsRetrievalMetadata(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "image/png")
+		_, _ = w.Write([]byte("not actually decoded"))
+	}))
+	defer server.Close()
+	result, err := localFetcher(server).FetchWithOptions(context.Background(), server.URL, Options{MetadataOnly: true})
+	if err != nil || result.Content != "" || result.ContentType != "image/png" || result.FinalURL == "" ||
+		result.SourceDomain != "127.0.0.1" || result.RetrievedAt == "" || result.DateConfidence != "none" {
+		t.Fatalf("non-HTML metadata-only result is incomplete: %+v, %v", result, err)
+	}
+}
+
+func TestFetchOptionsRejectInvalidCombinationsAndRange(t *testing.T) {
+	fetcher := NewForTest(&http.Client{}, staticResolver{}, true)
+	for _, options := range []Options{
+		{MaxCharacters: 255}, {MaxCharacters: hardMaxText + 1},
+		{MetadataOnly: true, Query: "fact"}, {MetadataOnly: true, MaxCharacters: 1_000},
+	} {
+		if _, err := fetcher.FetchWithOptions(context.Background(), "https://example.com", options); err == nil {
+			t.Fatalf("invalid options accepted: %+v", options)
+		}
+	}
+}
+
 func TestShortDocumentsAreFullAndLongDocumentsUseBoundaries(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "text/plain; charset=utf-8")
