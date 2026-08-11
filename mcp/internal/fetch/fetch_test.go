@@ -77,6 +77,138 @@ func TestFetchPlainTextJSONAndHTML(t *testing.T) {
 	}
 }
 
+func TestFetchJSONLDMetadataObjectArrayAndGraph(t *testing.T) {
+	tests := []struct {
+		name          string
+		jsonLD        string
+		wantAuthor    string
+		wantPublisher string
+	}{
+		{
+			name:       "object and string author",
+			jsonLD:     `{"@context":"https://schema.org","@type":"NewsArticle","datePublished":"2026-08-10T15:30:00+03:00","dateModified":"2026-08-10T16:45:00+03:00","author":"Alice","publisher":{"name":"Daily Example"}}`,
+			wantAuthor: "Alice", wantPublisher: "Daily Example",
+		},
+		{
+			name:       "root array and object author",
+			jsonLD:     `[{"@type":"WebSite","name":"Site"},{"@type":"Article","datePublished":"2026-08-10T12:30:00Z","author":{"@type":"Person","name":"Bob"}}]`,
+			wantAuthor: "Bob",
+		},
+		{
+			name:       "graph and author array",
+			jsonLD:     `{"@graph":[{"@type":"Organization","name":"Org"},{"@type":"BlogPosting","datePublished":"2026-08-10T12:30:00Z","author":[{"name":"Carol"},"Dan"]}]}`,
+			wantAuthor: "Carol",
+		},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			body := `<html><head><script type="application/ld+json">` + test.jsonLD + `</script></head><body><main><p>Article body.</p></main></body></html>`
+			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				w.Header().Set("Content-Type", "text/html; charset=utf-8")
+				_, _ = io.WriteString(w, body)
+			}))
+			defer server.Close()
+			result, err := localFetcher(server).Fetch(context.Background(), server.URL)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if result.PublishedAt != "2026-08-10T12:30:00Z" || result.DateConfidence != "high" ||
+				len(result.Authors) == 0 || result.Authors[0] != test.wantAuthor || result.Publisher != test.wantPublisher {
+				t.Fatalf("unexpected JSON-LD metadata: %+v", result)
+			}
+			if test.name == "object and string author" && result.ModifiedAt != "2026-08-10T13:45:00Z" {
+				t.Fatalf("dateModified was not normalized: %+v", result)
+			}
+			if test.name == "graph and author array" && (len(result.Authors) != 2 || result.Authors[1] != "Dan") {
+				t.Fatalf("author array was not extracted: %+v", result.Authors)
+			}
+		})
+	}
+}
+
+func TestFetchCanonicalOpenGraphAndMetaFallback(t *testing.T) {
+	body := `<html><head>
+		<link rel="alternate canonical" href="/canonical/story">
+		<meta property="og:site_name" content="Example Publisher">
+		<meta property="article:modified_time" content="2026-08-10T04:00:00Z">
+		<meta name="author" content="Eve Example">
+		<meta name="pubdate" content="2026-08-09T23:30:00-02:00">
+	</head><body><main><p>Readable article.</p></main></body></html>`
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/html")
+		_, _ = io.WriteString(w, body)
+	}))
+	defer server.Close()
+	result, err := localFetcher(server).Fetch(context.Background(), server.URL+"/original")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.CanonicalURL != server.URL+"/canonical/story" || result.SourceDomain != "127.0.0.1" ||
+		result.Publisher != "Example Publisher" || len(result.Authors) != 1 || result.Authors[0] != "Eve Example" ||
+		result.PublishedAt != "2026-08-10T01:30:00Z" || result.ModifiedAt != "2026-08-10T04:00:00Z" ||
+		result.DateConfidence != "medium" || result.DateConflict || result.RetrievedAt == "" {
+		t.Fatalf("unexpected fallback metadata: %+v", result)
+	}
+	foundOriginal := false
+	for _, evidence := range result.DateEvidence {
+		foundOriginal = foundOriginal || evidence.Value == "2026-08-09T23:30:00-02:00" && evidence.ParsedAt == "2026-08-10T01:30:00Z"
+	}
+	if len(result.DateEvidence) != 2 || !foundOriginal {
+		t.Fatalf("date evidence lost original value: %+v", result.DateEvidence)
+	}
+}
+
+func TestFetchTimeFallbackAndMalformedJSONLD(t *testing.T) {
+	body := `<html><head><script type="application/ld+json">{"broken":</script></head>
+		<body><main><time datetime="2026-08-10T20:00:00+05:30">August 10</time><p>Readable article.</p></main></body></html>`
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/html")
+		_, _ = io.WriteString(w, body)
+	}))
+	defer server.Close()
+	result, err := localFetcher(server).Fetch(context.Background(), server.URL)
+	if err != nil {
+		t.Fatalf("malformed JSON-LD broke page fetch: %v", err)
+	}
+	if result.PublishedAt != "2026-08-10T14:30:00Z" || result.DateConfidence != "low" || result.DateConflict ||
+		len(result.DateEvidence) != 1 || result.DateEvidence[0].Source != "time[datetime]" {
+		t.Fatalf("unexpected time fallback: %+v", result)
+	}
+}
+
+func TestFetchStrongPublishedDateConflict(t *testing.T) {
+	body := `<html><head>
+		<script type="application/ld+json">{"@type":"Report","datePublished":"2026-08-10T10:00:00Z"}</script>
+		<meta property="article:published_time" content="2026-08-10T11:00:00Z">
+		<meta name="date" content="not-a-date">
+	</head><body><main><p>Readable report.</p></main></body></html>`
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/html")
+		_, _ = io.WriteString(w, body)
+	}))
+	defer server.Close()
+	result, err := localFetcher(server).Fetch(context.Background(), server.URL)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !result.DateConflict || result.DateConfidence != "conflicting" || result.PublishedAt != "2026-08-10T10:00:00Z" ||
+		len(result.DateEvidence) != 3 || result.DateEvidence[2].Value != "not-a-date" || result.DateEvidence[2].ParsedAt != "" {
+		t.Fatalf("unexpected conflict/evidence result: %+v", result)
+	}
+}
+
+func TestFetchNonHTMLStillReturnsRetrievalMetadata(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/plain")
+		_, _ = io.WriteString(w, "plain content")
+	}))
+	defer server.Close()
+	result, err := localFetcher(server).Fetch(context.Background(), server.URL)
+	if err != nil || result.SourceDomain != "127.0.0.1" || result.RetrievedAt == "" || result.DateConfidence != "none" {
+		t.Fatalf("missing non-HTML retrieval metadata: %+v, %v", result, err)
+	}
+}
+
 func TestFetchPDFByPage(t *testing.T) {
 	body := minimalPDF("Hello PDF")
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {

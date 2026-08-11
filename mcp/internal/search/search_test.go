@@ -38,7 +38,9 @@ func TestSearchRequestParametersEncodingAndNormalization(t *testing.T) {
 	}
 	if len(result.Results) != 1 || result.Results[0].Title != "A title" ||
 		result.Results[0].Snippet != "some snippet" || len(result.Results[0].Engines) != 2 ||
-		result.Results[0].Score == nil || result.Results[0].PublishedDate == "" {
+		result.Results[0].Score == nil || result.Results[0].PublishedDate == "" ||
+		result.Results[0].PublishedAt != "2026-08-10T00:00:00Z" || result.Results[0].DateVerified ||
+		result.Results[0].PublishedAtSource != "searxng_index" || result.Results[0].SourceDomain != "example.com" {
 		t.Fatalf("unexpected normalized result: %+v", result)
 	}
 }
@@ -84,12 +86,12 @@ func TestSearchCompactsSnippetsAndDropsRawFields(t *testing.T) {
 			t.Fatalf("raw field/markup %q leaked: %s", forbidden, encoded)
 		}
 	}
-	if result.ResultCount != 1 || result.ReturnedCharacters == 0 || result.ApproximateTokens == 0 {
+	if result.ResultCount != 1 || result.StructuredResultCount != 1 || result.ReturnedCharacters == 0 || result.ApproximateTokens == 0 {
 		t.Fatalf("missing budget metadata: %+v", result)
 	}
 }
 
-func TestSearchDeduplicatesURLsAndObviousTitles(t *testing.T) {
+func TestSearchDeduplicatesURLsButClustersMatchingTitles(t *testing.T) {
 	results := []map[string]any{
 		{"title": "Canonical long article title", "url": "https://Example.com/story/?utm_source=x&b=2&a=1", "content": "one"},
 		{"title": "Tracking duplicate title", "url": "https://example.com/story?a=1&b=2&fbclid=abc", "content": "two"},
@@ -104,10 +106,84 @@ func TestSearchDeduplicatesURLsAndObviousTitles(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(result.Results) != 2 || result.Results[0].Rank != 1 ||
+	if len(result.Results) != 3 || result.Results[0].Rank != 1 ||
 		result.Results[0].URL != "https://example.com/story?a=1&b=2" ||
-		result.Results[1].URL != "https://independent.example/story" {
+		result.Results[1].URL != "https://aggregator.example/copy" ||
+		result.Results[2].URL != "https://independent.example/story" {
 		t.Fatalf("unexpected deduplication: %+v", result.Results)
+	}
+	if result.Results[0].TitleClusterID == "" || result.Results[0].TitleClusterID != result.Results[1].TitleClusterID ||
+		result.Results[0].TitleClusterID == result.Results[2].TitleClusterID {
+		t.Fatalf("unexpected title clusters: %+v", result.Results)
+	}
+}
+
+func TestSearchPublishedBoundsAndMissingDates(t *testing.T) {
+	payload := `{"results":[
+		{"title":"old","url":"https://old.example/story","publishedDate":"2026-08-10T09:59:59Z"},
+		{"title":"inside","url":"https://inside.example/story","publishedDate":"2026-08-10T12:00:00+02:00"},
+		{"title":"boundary","url":"https://boundary.example/story","publishedDate":"2026-08-10T11:00:00Z"},
+		{"title":"missing","url":"https://missing.example/story"},
+		{"title":"invalid","url":"https://invalid.example/story","publishedDate":"yesterday"}
+	]}`
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) { _, _ = w.Write([]byte(payload)) }))
+	defer server.Close()
+	client, _ := New(server.URL, server.Client(), 8)
+
+	result, err := client.Search(context.Background(), Params{
+		Query: "q", PublishedAfter: "2026-08-10T09:59:59Z", PublishedBefore: "2026-08-10T11:00:00Z",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(result.Results) != 3 || result.Results[0].Title != "inside" || result.Results[1].Title != "missing" ||
+		result.Results[2].Title != "invalid" {
+		t.Fatalf("unexpected strict-bound filtering: %+v", result.Results)
+	}
+	if result.Freshness.PublishedAfter != "2026-08-10T09:59:59Z" || result.Freshness.PublishedBefore != "2026-08-10T11:00:00Z" {
+		t.Fatalf("missing applied freshness: %+v", result.Freshness)
+	}
+
+	required, err := client.Search(context.Background(), Params{
+		Query: "q", PublishedAfter: "2026-08-10T09:59:59Z", PublishedBefore: "2026-08-10T11:00:00Z",
+		RequirePublishedDate: true,
+	})
+	if err != nil || len(required.Results) != 1 || required.Results[0].Title != "inside" {
+		t.Fatalf("require_published_date failed: %+v, %v", required, err)
+	}
+}
+
+func TestSearchRejectsInvalidDateBounds(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_, _ = w.Write([]byte(`{"results":[]}`))
+	}))
+	defer server.Close()
+	client, _ := New(server.URL, server.Client(), 8)
+	for _, params := range []Params{
+		{Query: "q", PublishedAfter: "2026-08-10"},
+		{Query: "q", PublishedAfter: "2026-08-11T00:00:00Z", PublishedBefore: "2026-08-10T00:00:00Z"},
+		{Query: "q", PublishedAfter: "2026-08-10T00:00:00Z", PublishedBefore: "2026-08-10T00:00:00Z"},
+	} {
+		if _, err := client.Search(context.Background(), params); err == nil {
+			t.Fatalf("expected invalid bounds error for %+v", params)
+		}
+	}
+}
+
+func TestSearchEmptyAndUnresponsiveEnginesAreStructured(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_, _ = w.Write([]byte(`{"results":[],"unresponsive_engines":[["google","timeout"],["bing","CAPTCHA"]]}`))
+	}))
+	defer server.Close()
+	client, _ := New(server.URL, server.Client(), 8)
+	result, err := client.Search(context.Background(), Params{Query: "q"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !result.Empty || result.RawResultCount != 0 || result.ResultCount != 0 || result.StructuredResultCount != 0 || result.Results == nil ||
+		len(result.UnresponsiveEngines) != 2 || result.UnresponsiveEngines[0].Engine != "google" ||
+		result.UnresponsiveEngines[0].Error != "timeout" || result.RetrievedAt == "" || result.ElapsedMS < 0 {
+		t.Fatalf("unexpected empty diagnostics: %+v", result)
 	}
 }
 
@@ -143,7 +219,6 @@ func TestSearchFailures(t *testing.T) {
 	}{
 		{"HTTP error", func(w http.ResponseWriter, r *http.Request) { http.Error(w, "no", http.StatusBadGateway) }, time.Second, "HTTP 502"},
 		{"invalid JSON", func(w http.ResponseWriter, r *http.Request) { _, _ = w.Write([]byte("{")) }, time.Second, "invalid JSON"},
-		{"empty", func(w http.ResponseWriter, r *http.Request) { _, _ = w.Write([]byte(`{"results":[]}`)) }, time.Second, "no results"},
 		{"timeout", func(w http.ResponseWriter, r *http.Request) {
 			time.Sleep(100 * time.Millisecond)
 			_, _ = w.Write([]byte(`{"results":[]}`))

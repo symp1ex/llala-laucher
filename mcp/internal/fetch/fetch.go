@@ -52,21 +52,31 @@ type Fetcher struct {
 }
 
 type Result struct {
-	Notice              string `json:"notice"`
-	SourceURL           string `json:"sourceUrl"`
-	FinalURL            string `json:"finalUrl"`
-	ContentType         string `json:"contentType"`
-	Title               string `json:"title,omitempty"`
-	Content             string `json:"content"`
-	Truncated           bool   `json:"truncated"`
-	SelectionMode       string `json:"selectionMode"`
-	Query               string `json:"query,omitempty"`
-	PDFPages            []int  `json:"pdfPages,omitempty"`
-	ReturnedCharacters  int    `json:"returnedCharacters"`
-	ReturnedBytes       int    `json:"returnedBytes"`
-	ApproximateTokens   int    `json:"approximateTokens"`
-	ExtractedCharacters int    `json:"extractedCharacters"`
-	SelectedChunks      int    `json:"selectedChunks,omitempty"`
+	Notice              string         `json:"notice"`
+	SourceURL           string         `json:"sourceUrl"`
+	FinalURL            string         `json:"finalUrl"`
+	ContentType         string         `json:"contentType"`
+	Title               string         `json:"title,omitempty"`
+	Content             string         `json:"content"`
+	Truncated           bool           `json:"truncated"`
+	SelectionMode       string         `json:"selectionMode"`
+	Query               string         `json:"query,omitempty"`
+	PDFPages            []int          `json:"pdfPages,omitempty"`
+	ReturnedCharacters  int            `json:"returnedCharacters"`
+	ReturnedBytes       int            `json:"returnedBytes"`
+	ApproximateTokens   int            `json:"approximateTokens"`
+	ExtractedCharacters int            `json:"extractedCharacters"`
+	SelectedChunks      int            `json:"selectedChunks,omitempty"`
+	CanonicalURL        string         `json:"canonicalUrl"`
+	SourceDomain        string         `json:"sourceDomain"`
+	Publisher           string         `json:"publisher"`
+	Authors             []string       `json:"authors"`
+	PublishedAt         string         `json:"publishedAt"`
+	ModifiedAt          string         `json:"modifiedAt"`
+	DateEvidence        []DateEvidence `json:"dateEvidence"`
+	DateConfidence      string         `json:"dateConfidence"`
+	DateConflict        bool           `json:"dateConflict"`
+	RetrievedAt         string         `json:"retrievedAt"`
 }
 
 func New(timeout time.Duration) *Fetcher {
@@ -142,8 +152,13 @@ func (f *Fetcher) Fetch(ctx context.Context, rawURL string, optionalQuery ...str
 	}
 	mediaType = strings.ToLower(mediaType)
 	var title, content string
+	metadata := pageMetadata{DateConfidence: "none"}
 	switch mediaType {
 	case "text/html", "application/xhtml+xml":
+		metadata, err = extractHTMLMetadata(body, contentType, resp.Request.URL)
+		if err != nil {
+			return Result{}, fmt.Errorf("extract %s metadata: %w", mediaType, err)
+		}
 		title, content, err = htmlToMarkdown(body, contentType, resp.Request.URL)
 	case "text/plain":
 		content, err = decodeText(body, contentType)
@@ -185,6 +200,11 @@ func (f *Fetcher) Fetch(ctx context.Context, rawURL string, optionalQuery ...str
 		ReturnedCharacters: textutil.RuneCount(selected), ReturnedBytes: len(selected),
 		ApproximateTokens: textutil.EstimateTokens(selected), ExtractedCharacters: extractedCharacters,
 		SelectedChunks: selectedChunks,
+		CanonicalURL:   metadata.CanonicalURL, SourceDomain: strings.ToLower(resp.Request.URL.Hostname()),
+		Publisher: metadata.Publisher, Authors: metadata.Authors, PublishedAt: metadata.PublishedAt,
+		ModifiedAt: metadata.ModifiedAt, DateEvidence: metadata.DateEvidence,
+		DateConfidence: metadata.DateConfidence, DateConflict: metadata.DateConflict,
+		RetrievedAt: time.Now().UTC().Format(time.RFC3339),
 	}, nil
 }
 

@@ -82,35 +82,46 @@ func TestInitializeListPingAndCalls(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(list.Tools) != 2 || list.Tools[0].Name != "web_fetch" && list.Tools[1].Name != "web_fetch" {
+	if len(list.Tools) != 3 {
 		t.Fatalf("unexpected tools: %+v", list.Tools)
 	}
-	var searchDescription, fetchDescription string
+	var searchDescription, fetchDescription, researchDescription string
 	for _, tool := range list.Tools {
 		switch tool.Name {
 		case "web_search":
 			searchDescription = strings.ToLower(tool.Description)
 		case "web_fetch":
 			fetchDescription = strings.ToLower(tool.Description)
+		case "web_news_research":
+			researchDescription = strings.ToLower(tool.Description)
 		}
 	}
-	for _, required := range []string{"first evaluate", "do not fetch every result", "refine", "primary sources", "stop when"} {
+	for _, required := range []string{"snippets are unverified", "dateverified=false", "web_news_research", "not automatically independent", "unresponsiveengines"} {
 		if !strings.Contains(searchDescription, required) {
 			t.Fatalf("web_search description lacks %q: %q", required, searchDescription)
 		}
 	}
-	for _, required := range []string{"limited number", "query", "external/untrusted", "independent source", "official"} {
+	for _, required := range []string{"dateevidence", "dateconfidence", "unverified", "external/untrusted", "do not prove"} {
 		if !strings.Contains(fetchDescription, required) {
 			t.Fatalf("web_fetch description lacks %q: %q", required, fetchDescription)
 		}
 	}
+	for _, required := range []string{"last n hours", "bounded", "date conflicts", "distinctdomains", "not a claim", "not a generated summary"} {
+		if !strings.Contains(researchDescription, required) {
+			t.Fatalf("web_news_research description lacks %q: %q", required, researchDescription)
+		}
+	}
 	searchResult, err := session.CallTool(context.Background(), &mcp.CallToolParams{
-		Name: "web_search", Arguments: map[string]any{"query": "current news", "max_results": 3, "category": "news"},
+		Name: "web_search", Arguments: map[string]any{
+			"query": "current news", "max_results": 3, "category": "news",
+			"published_after": "2026-08-10T00:00:00Z", "require_published_date": true,
+		},
 	})
 	if err != nil || searchResult.IsError {
 		t.Fatalf("web_search failed: %+v %v", searchResult, err)
 	}
-	if searcher.params.Query != "current news" || searcher.params.MaxResults != 3 || searcher.params.Category != "news" {
+	if searcher.params.Query != "current news" || searcher.params.MaxResults != 3 || searcher.params.Category != "news" ||
+		searcher.params.PublishedAfter != "2026-08-10T00:00:00Z" || !searcher.params.RequirePublishedDate {
 		t.Fatalf("unexpected search params: %+v", searcher.params)
 	}
 	fetchResult, err := session.CallTool(context.Background(), &mcp.CallToolParams{
@@ -123,6 +134,15 @@ func TestInitializeListPingAndCalls(t *testing.T) {
 	var decoded fetch.Result
 	if err := json.Unmarshal([]byte(text), &decoded); err != nil || decoded.Content != "page" {
 		t.Fatalf("invalid fetch JSON: %q, %v", text, err)
+	}
+	researchResult, err := session.CallTool(context.Background(), &mcp.CallToolParams{
+		Name: "web_news_research", Arguments: map[string]any{
+			"queries": []any{"current news"}, "freshness_hours": 24, "max_candidates": 3,
+		},
+	})
+	if err != nil || researchResult.IsError || !strings.Contains(researchResult.Content[0].(*mcp.TextContent).Text, "missing_verified_date") ||
+		searcher.params.Category != "news" || searcher.params.TimeRange != "day" {
+		t.Fatalf("web_news_research failed: %+v %v params=%+v", researchResult, err, searcher.params)
 	}
 }
 
@@ -165,6 +185,19 @@ func TestStrictInputSchemaRejectsInvalidCalls(t *testing.T) {
 		result, err := session.CallTool(context.Background(), &mcp.CallToolParams{Name: "web_search", Arguments: arguments})
 		if err == nil && (result == nil || !result.IsError) {
 			t.Fatalf("invalid arguments accepted: %v => %+v, %v", arguments, result, err)
+		}
+	}
+	for _, arguments := range []map[string]any{
+		{},
+		{"queries": []any{}, "freshness_hours": 24},
+		{"queries": []any{"q"}, "freshness_hours": 0},
+		{"queries": []any{"q"}, "freshness_hours": 169},
+		{"queries": []any{"q"}, "freshness_hours": 24, "max_candidates": 41},
+		{"queries": []any{"q"}, "freshness_hours": 24, "unknown": true},
+	} {
+		result, err := session.CallTool(context.Background(), &mcp.CallToolParams{Name: "web_news_research", Arguments: arguments})
+		if err == nil && (result == nil || !result.IsError) {
+			t.Fatalf("invalid research arguments accepted: %v => %+v, %v", arguments, result, err)
 		}
 	}
 	for _, arguments := range []map[string]any{
