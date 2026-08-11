@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -14,6 +15,7 @@ import (
 
 	"llala-launcher/mcp/internal/fetch"
 	"llala-launcher/mcp/internal/search"
+	"llala-launcher/mcp/internal/textutil"
 )
 
 type fakeSearch struct {
@@ -30,12 +32,16 @@ func (f *fakeSearch) Search(_ context.Context, params search.Params) (search.Res
 }
 
 type fakeFetch struct {
-	url string
-	err error
+	url   string
+	query string
+	err   error
 }
 
-func (f *fakeFetch) Fetch(_ context.Context, value string) (fetch.Result, error) {
+func (f *fakeFetch) Fetch(_ context.Context, value string, query ...string) (fetch.Result, error) {
 	f.url = value
+	if len(query) > 0 {
+		f.query = query[0]
+	}
 	if f.err != nil {
 		return fetch.Result{}, f.err
 	}
@@ -79,6 +85,25 @@ func TestInitializeListPingAndCalls(t *testing.T) {
 	if len(list.Tools) != 2 || list.Tools[0].Name != "web_fetch" && list.Tools[1].Name != "web_fetch" {
 		t.Fatalf("unexpected tools: %+v", list.Tools)
 	}
+	var searchDescription, fetchDescription string
+	for _, tool := range list.Tools {
+		switch tool.Name {
+		case "web_search":
+			searchDescription = strings.ToLower(tool.Description)
+		case "web_fetch":
+			fetchDescription = strings.ToLower(tool.Description)
+		}
+	}
+	for _, required := range []string{"first evaluate", "do not fetch every result", "refine", "primary sources", "stop when"} {
+		if !strings.Contains(searchDescription, required) {
+			t.Fatalf("web_search description lacks %q: %q", required, searchDescription)
+		}
+	}
+	for _, required := range []string{"limited number", "query", "external/untrusted", "independent source", "official"} {
+		if !strings.Contains(fetchDescription, required) {
+			t.Fatalf("web_fetch description lacks %q: %q", required, fetchDescription)
+		}
+	}
 	searchResult, err := session.CallTool(context.Background(), &mcp.CallToolParams{
 		Name: "web_search", Arguments: map[string]any{"query": "current news", "max_results": 3, "category": "news"},
 	})
@@ -89,15 +114,27 @@ func TestInitializeListPingAndCalls(t *testing.T) {
 		t.Fatalf("unexpected search params: %+v", searcher.params)
 	}
 	fetchResult, err := session.CallTool(context.Background(), &mcp.CallToolParams{
-		Name: "web_fetch", Arguments: map[string]any{"url": "https://example.com/article"},
+		Name: "web_fetch", Arguments: map[string]any{"url": "https://example.com/article", "query": "specific fact"},
 	})
-	if err != nil || fetchResult.IsError || fetcher.url != "https://example.com/article" {
+	if err != nil || fetchResult.IsError || fetcher.url != "https://example.com/article" || fetcher.query != "specific fact" {
 		t.Fatalf("web_fetch failed: %+v %v", fetchResult, err)
 	}
 	text := fetchResult.Content[0].(*mcp.TextContent).Text
 	var decoded fetch.Result
 	if err := json.Unmarshal([]byte(text), &decoded); err != nil || decoded.Content != "page" {
 		t.Fatalf("invalid fetch JSON: %q, %v", text, err)
+	}
+}
+
+func TestFetchWithoutQueryRemainsBackwardCompatible(t *testing.T) {
+	fetcher := &fakeFetch{}
+	session, closeSession := connect(t, &fakeSearch{}, fetcher)
+	defer closeSession()
+	result, err := session.CallTool(context.Background(), &mcp.CallToolParams{
+		Name: "web_fetch", Arguments: map[string]any{"url": "https://example.com/article"},
+	})
+	if err != nil || result.IsError || fetcher.query != "" {
+		t.Fatalf("legacy web_fetch(url) failed: %+v %v", result, err)
 	}
 }
 
@@ -128,6 +165,17 @@ func TestStrictInputSchemaRejectsInvalidCalls(t *testing.T) {
 		result, err := session.CallTool(context.Background(), &mcp.CallToolParams{Name: "web_search", Arguments: arguments})
 		if err == nil && (result == nil || !result.IsError) {
 			t.Fatalf("invalid arguments accepted: %v => %+v, %v", arguments, result, err)
+		}
+	}
+	for _, arguments := range []map[string]any{
+		{},
+		{"url": "https://example.com", "query": ""},
+		{"url": "https://example.com", "query": 42},
+		{"url": "https://example.com", "unknown": true},
+	} {
+		result, err := session.CallTool(context.Background(), &mcp.CallToolParams{Name: "web_fetch", Arguments: arguments})
+		if err == nil && (result == nil || !result.IsError) {
+			t.Fatalf("invalid fetch arguments accepted: %v => %+v, %v", arguments, result, err)
 		}
 	}
 	if err := session.Ping(context.Background(), nil); err != nil {
@@ -167,5 +215,59 @@ func TestMCPIntegrationWithRealSearchAndFetchClients(t *testing.T) {
 	}
 	if err := session.Ping(context.Background(), nil); err != nil {
 		t.Fatalf("integrated session ping failed: %v", err)
+	}
+}
+
+func TestTypicalResearchWorkflowContextBudget(t *testing.T) {
+	mock := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/search" {
+			results := make([]map[string]any, 8)
+			for index := range results {
+				results[index] = map[string]any{
+					"title":   fmt.Sprintf("Authoritative source %d", index+1),
+					"url":     fmt.Sprintf("http://research.invalid/article/%d", index+1),
+					"content": "Informative current snippet with enough context to assess relevance and authority.",
+					"engines": []string{"mock"},
+				}
+			}
+			_ = json.NewEncoder(w).Encode(map[string]any{"results": results})
+			return
+		}
+		w.Header().Set("Content-Type", "text/html; charset=utf-8")
+		_, _ = io.WriteString(w, "<html><body><main><h1>Technical report</h1><p>"+
+			strings.Repeat("Background evidence and methodological detail. ", 700)+
+			"</p><h2>CUDA change in version 1.8</h2><p>Version 1.8 enabled CUDA graph execution after validation.</p><p>Independent measurements and caveats follow this finding.</p><h2>Appendix</h2><p>"+
+			strings.Repeat("Additional source material and tabulated observations. ", 700)+"</p></main></body></html>")
+	}))
+	defer mock.Close()
+	searcher, _ := search.New(mock.URL, mock.Client(), 8)
+	fetcher := fetch.NewForTest(mock.Client(), nil, true)
+	session, closeSession := connect(t, searcher, fetcher)
+	defer closeSession()
+
+	var combined strings.Builder
+	call := func(name string, arguments map[string]any) {
+		t.Helper()
+		result, err := session.CallTool(context.Background(), &mcp.CallToolParams{Name: name, Arguments: arguments})
+		if err != nil || result.IsError {
+			t.Fatalf("%s failed: %+v %v", name, result, err)
+		}
+		combined.WriteString(result.Content[0].(*mcp.TextContent).Text)
+		combined.WriteByte('\n')
+	}
+	call("web_search", map[string]any{"query": "CUDA release current facts"})
+	call("web_search", map[string]any{"query": "CUDA 1.8 independent verification"})
+	for index := 0; index < 4; index++ {
+		arguments := map[string]any{"url": mock.URL + fmt.Sprintf("/article/%d", index)}
+		if index >= 2 {
+			arguments["query"] = "What changed in version 1.8 for CUDA?"
+		}
+		call("web_fetch", arguments)
+	}
+	characters := textutil.RuneCount(combined.String())
+	tokens := textutil.EstimateTokens(combined.String())
+	t.Logf("2 searches + 4 fetches: %d bytes, %d characters, approximately %d tokens", combined.Len(), characters, tokens)
+	if tokens < 10_000 || tokens > 50_000 {
+		t.Fatalf("workflow budget outside quality/regression envelope: bytes=%d chars=%d tokens=%d", combined.Len(), characters, tokens)
 	}
 }

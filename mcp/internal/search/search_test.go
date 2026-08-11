@@ -3,12 +3,14 @@ package search
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
 	"strings"
 	"testing"
 	"time"
+	"unicode/utf8"
 )
 
 func TestSearchRequestParametersEncodingAndNormalization(t *testing.T) {
@@ -44,7 +46,7 @@ func TestSearchRequestParametersEncodingAndNormalization(t *testing.T) {
 func TestSearchResultCountAndOutputSizeLimits(t *testing.T) {
 	results := make([]map[string]any, 5)
 	for i := range results {
-		results[i] = map[string]any{"title": "result", "url": "https://example.com", "content": strings.Repeat("x", 100)}
+		results[i] = map[string]any{"title": "result", "url": fmt.Sprintf("https://example.com/%d", i), "content": strings.Repeat("x", 100)}
 	}
 	payload, _ := json.Marshal(map[string]any{"results": results})
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) { _, _ = w.Write(payload) }))
@@ -58,6 +60,77 @@ func TestSearchResultCountAndOutputSizeLimits(t *testing.T) {
 	sized, err := client.Search(context.Background(), Params{Query: "q", MaxResults: 5})
 	if err != nil || len(sized.Results) >= 5 || !sized.Truncated {
 		t.Fatalf("size limit failed: %+v, %v", sized, err)
+	}
+}
+
+func TestSearchCompactsSnippetsAndDropsRawFields(t *testing.T) {
+	payload := `{"results":[{"title":"Useful &amp; current","url":"https://example.com/a","content":"<b>Lead</b> ` + strings.Repeat("данные ", 200) + `","engines":["z","z","a"],"score":2,"publishedDate":"2026-08-11","category":"news","positions":[1],"thumbnail":"huge"}]}`
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) { _, _ = w.Write([]byte(payload)) }))
+	defer server.Close()
+	client, _ := New(server.URL, server.Client(), 8)
+	result, err := client.Search(context.Background(), Params{Query: "q"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(result.Results) != 1 || result.Results[0].Rank != 1 || !strings.HasPrefix(result.Results[0].Snippet, "Lead данные") {
+		t.Fatalf("unexpected compact result: %+v", result)
+	}
+	if len([]rune(result.Results[0].Snippet)) > maxSnippetChars || !utf8.ValidString(result.Results[0].Snippet) {
+		t.Fatalf("snippet limit/UTF-8 failure: %q", result.Results[0].Snippet)
+	}
+	encoded, _ := json.Marshal(result)
+	for _, forbidden := range []string{"positions", "thumbnail", "category", "<b>"} {
+		if strings.Contains(string(encoded), forbidden) {
+			t.Fatalf("raw field/markup %q leaked: %s", forbidden, encoded)
+		}
+	}
+	if result.ResultCount != 1 || result.ReturnedCharacters == 0 || result.ApproximateTokens == 0 {
+		t.Fatalf("missing budget metadata: %+v", result)
+	}
+}
+
+func TestSearchDeduplicatesURLsAndObviousTitles(t *testing.T) {
+	results := []map[string]any{
+		{"title": "Canonical long article title", "url": "https://Example.com/story/?utm_source=x&b=2&a=1", "content": "one"},
+		{"title": "Tracking duplicate title", "url": "https://example.com/story?a=1&b=2&fbclid=abc", "content": "two"},
+		{"title": "Canonical long article title", "url": "https://aggregator.example/copy", "content": "copy"},
+		{"title": "Independent analysis", "url": "https://independent.example/story", "content": "three"},
+	}
+	payload, _ := json.Marshal(map[string]any{"results": results})
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) { _, _ = w.Write(payload) }))
+	defer server.Close()
+	client, _ := New(server.URL, server.Client(), 8)
+	result, err := client.Search(context.Background(), Params{Query: "q"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(result.Results) != 2 || result.Results[0].Rank != 1 ||
+		result.Results[0].URL != "https://example.com/story?a=1&b=2" ||
+		result.Results[1].URL != "https://independent.example/story" {
+		t.Fatalf("unexpected deduplication: %+v", result.Results)
+	}
+}
+
+func TestSearchHardOutputLimitKeepsValidJSON(t *testing.T) {
+	results := make([]map[string]any, 20)
+	for index := range results {
+		results[index] = map[string]any{
+			"title": fmt.Sprintf("Result %d", index), "url": fmt.Sprintf("https://example.com/%d", index),
+			"content": strings.Repeat("long snippet ", 200),
+		}
+	}
+	payload, _ := json.Marshal(map[string]any{"results": results})
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) { _, _ = w.Write(payload) }))
+	defer server.Close()
+	client, _ := New(server.URL, server.Client(), 8)
+	client.SetMaxOutputSize(2_000)
+	result, err := client.Search(context.Background(), Params{Query: "q", MaxResults: 20})
+	if err != nil {
+		t.Fatal(err)
+	}
+	encoded, err := json.Marshal(result)
+	if err != nil || len(encoded) > 2_000 || !result.Truncated {
+		t.Fatalf("hard limit failure: bytes=%d truncated=%v err=%v", len(encoded), result.Truncated, err)
 	}
 }
 
