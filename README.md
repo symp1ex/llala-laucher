@@ -22,16 +22,21 @@ python -m pip install -r requirements.txt
 ```text
 llala-laucher/
 ├─ llala-laucher.py
-├─ app.py
-├─ app_paths.py
-├─ tray.py
-├─ windows_integration.py
-├─ llama_server.py
-├─ model_scanner.py
-├─ parameter_specs.py
-├─ preset_manager.py
-├─ server_process.py
-├─ widgets.py
+├─ version.py
+├─ internal/
+│  ├─ __init__.py
+│  ├─ app.py
+│  ├─ app_paths.py
+│  ├─ llama_server.py
+│  ├─ model_scanner.py
+│  ├─ parameter_specs.py
+│  ├─ preset_manager.py
+│  ├─ server_process.py
+│  ├─ tray.py
+│  ├─ updater.py
+│  ├─ web_search_settings.py
+│  ├─ widgets.py
+│  └─ windows_integration.py
 ├─ requirements.txt
 ├─ mcp/
 │  ├─ go.mod / go.sum
@@ -51,7 +56,7 @@ llala-laucher/
 
 При запуске из исходников все пути вычисляются от каталога launcher. В frozen EXE рабочим корнем становится каталог самого EXE. Текущий каталог процесса (`%CD%`) не используется.
 
-На этапе разработки в `app_paths.py` задан временный fallback:
+На этапе разработки в `internal/app_paths.py` задан временный fallback:
 
 ```text
 F:\itt\llama\llama-b10282-bin-win-cuda-13.3-x64
@@ -292,7 +297,7 @@ llama/preset/Qwen3.6-35B-A3B-Q4_K_M--f6b98dc27b/original-bat.json
 
 ## Совместимость CLI и MoE
 
-При старте и по кнопке **Recheck CLI** launcher выполняет `llama-server.exe --help`. Известные switches ищутся как отдельные имена. Неподдерживаемый параметр остается видимым с пометкой, блокируется и не попадает в argv. Если `--help` прочитать нельзя, используется встроенный декларативный каталог из `parameter_specs.py`.
+При старте и по кнопке **Recheck CLI** launcher выполняет `llama-server.exe --help`. Известные switches ищутся как отдельные имена. Неподдерживаемый параметр остается видимым с пометкой, блокируется и не попадает в argv. Если `--help` прочитать нельзя, используется встроенный декларативный каталог из `internal/parameter_specs.py`.
 
 Вкладка **MoE** использует реально подтвержденные сборкой llama.cpp b10282 параметры:
 

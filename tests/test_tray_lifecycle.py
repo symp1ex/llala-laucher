@@ -8,9 +8,9 @@ import threading
 import unittest
 from unittest.mock import Mock, call, patch
 
-from app import LauncherApp
-from tray import PersistentTrayIcon, TrayController, systray_win32
-from windows_integration import resolve_icon_path
+from internal.app import LauncherApp
+from internal.tray import PersistentTrayIcon, TrayController, systray_win32
+from internal.windows_integration import resolve_icon_path
 
 
 class RecordingTray:
@@ -82,7 +82,7 @@ class PersistentTrayIconTests(unittest.TestCase):
         icon._retry_needed = False
         icon._notify_icon_locked = Mock(side_effect=[False, True])
 
-        with patch("tray.systray_win32.NotifyData", return_value=object()):
+        with patch("internal.tray.systray_win32.NotifyData", return_value=object()):
             refreshed = icon._refresh_icon()
 
         self.assertTrue(refreshed)
@@ -100,7 +100,7 @@ class PersistentTrayIconTests(unittest.TestCase):
         icon._executable_icon_path = Path("llala-laucher.exe")
         icon._release_owned_icon = Mock()
 
-        with patch("tray.extract_executable_icon", return_value=789) as extract:
+        with patch("internal.tray.extract_executable_icon", return_value=789) as extract:
             icon._load_icon()
 
         extract.assert_called_once_with(Path("llala-laucher.exe"), small=False)

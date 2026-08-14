@@ -9,16 +9,16 @@ import unittest
 from unittest.mock import Mock, patch
 from urllib import error as url_error
 
-from app import LauncherApp
-from app_paths import resolve_app_paths
-from llama_server import (
+from internal.app import LauncherApp
+from internal.app_paths import resolve_app_paths
+from internal.llama_server import (
     CommandValidationError,
     build_command,
     default_parameter_state,
     detect_supported_parameters,
     validate_web_mcp_executable,
 )
-from web_search_settings import (
+from internal.web_search_settings import (
     ConnectionTestResult,
     WebSearchSettings,
     test_searxng_connection,
@@ -111,7 +111,7 @@ class WebSearchCommandTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as temporary:
             server = Path(temporary) / "llama-server.exe"
             server.touch()
-            with patch("llama_server.subprocess.run") as run:
+            with patch("internal.llama_server.subprocess.run") as run:
                 run.return_value.stdout = "--host --mcp-servers-json"
                 result = detect_supported_parameters(server)
             self.assertTrue(result.supports_mcp_servers_json)
@@ -120,7 +120,7 @@ class WebSearchCommandTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as temporary:
             executable = Path(temporary) / "web-mcp.exe"
             executable.touch()
-            with patch("llama_server.subprocess.run", side_effect=OSError("bad image")):
+            with patch("internal.llama_server.subprocess.run", side_effect=OSError("bad image")):
                 with self.assertRaisesRegex(CommandValidationError, "Could not start"):
                     validate_web_mcp_executable(executable)
 
@@ -227,8 +227,8 @@ class WebSearchWindowTests(unittest.TestCase):
         expected = ConnectionTestResult(True, "OK")
 
         with (
-            patch("app.test_searxng_connection", return_value=expected) as test_connection,
-            patch("app.threading.Thread") as thread,
+            patch("internal.app.test_searxng_connection", return_value=expected) as test_connection,
+            patch("internal.app.threading.Thread") as thread,
         ):
             app._start_searxng_test()
             test_connection.assert_not_called()
@@ -280,7 +280,7 @@ class SearXNGProbeTests(unittest.TestCase):
         response.read.return_value = b'{"results": []}'
         response.__enter__ = Mock(return_value=response)
         response.__exit__ = Mock(return_value=False)
-        with patch("web_search_settings.request.urlopen", return_value=response) as urlopen:
+        with patch("internal.web_search_settings.request.urlopen", return_value=response) as urlopen:
             result = test_searxng_connection(WebSearchSettings())
         self.assertTrue(result.ok)
         called_url = urlopen.call_args.args[0].full_url
@@ -293,7 +293,7 @@ class SearXNGProbeTests(unittest.TestCase):
         response.read.return_value = b"<html>disabled</html>"
         response.__enter__ = Mock(return_value=response)
         response.__exit__ = Mock(return_value=False)
-        with patch("web_search_settings.request.urlopen", return_value=response):
+        with patch("internal.web_search_settings.request.urlopen", return_value=response):
             result = test_searxng_connection(WebSearchSettings())
         self.assertFalse(result.ok)
         self.assertIn("valid JSON", result.message)
@@ -302,13 +302,13 @@ class SearXNGProbeTests(unittest.TestCase):
         http_failure = url_error.HTTPError(
             "http://127.0.0.1/search", 403, "Forbidden", None, None
         )
-        with patch("web_search_settings.request.urlopen", side_effect=http_failure):
+        with patch("internal.web_search_settings.request.urlopen", side_effect=http_failure):
             result = test_searxng_connection(WebSearchSettings())
         self.assertFalse(result.ok)
         self.assertIn("JSON Search API", result.message)
 
         with patch(
-            "web_search_settings.request.urlopen",
+            "internal.web_search_settings.request.urlopen",
             side_effect=url_error.URLError(TimeoutError()),
         ):
             result = test_searxng_connection(WebSearchSettings())

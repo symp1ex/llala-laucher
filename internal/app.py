@@ -15,8 +15,8 @@ import traceback
 from typing import Any, Mapping
 import webbrowser
 
-from app_paths import AppPaths
-from llama_server import (
+from .app_paths import AppPaths
+from .llama_server import (
     CommandValidationError,
     DetectionResult,
     build_command,
@@ -26,21 +26,21 @@ from llama_server import (
     format_windows_command,
     validate_web_mcp_executable,
 )
-from model_scanner import ModelInfo, ModelScanner
-from parameter_specs import CATEGORIES, PARAMETER_SPECS, SPEC_BY_KEY
-from preset_manager import PresetError, PresetManager
-from server_process import LlamaServerProcess
-from tray import TrayController
-from updater import CheckResult, InstallResult, UpdateState, UpdaterService
+from .model_scanner import ModelInfo, ModelScanner
+from .parameter_specs import CATEGORIES, PARAMETER_SPECS, SPEC_BY_KEY
+from .preset_manager import PresetError, PresetManager
+from .server_process import LlamaServerProcess
+from .tray import TrayController
+from .updater import CheckResult, InstallResult, UpdateState, UpdaterService
 from version import VERSION
-from widgets import ParameterControl, ScrollableFrame, Tooltip
-from windows_integration import (
+from .widgets import ParameterControl, ScrollableFrame, Tooltip
+from .windows_integration import (
     apply_window_icon,
     client_size_for_outer_window,
     frozen_executable_path,
     resolve_icon_path,
 )
-from web_search_settings import (
+from .web_search_settings import (
     ConnectionTestResult,
     WebSearchSettings,
     WebSearchSettingsError,

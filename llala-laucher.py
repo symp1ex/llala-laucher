@@ -6,9 +6,9 @@ from pathlib import Path
 import sys
 import tkinter as tk
 
-from app import LauncherApp
-from app_paths import resolve_app_paths
-from windows_integration import set_windows_app_user_model_id
+from internal.app import LauncherApp
+from internal.app_paths import resolve_app_paths
+from internal.windows_integration import set_windows_app_user_model_id
 
 
 def main() -> None:

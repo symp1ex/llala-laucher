@@ -14,7 +14,7 @@ from typing import Callable
 from infi.systray import SysTrayIcon
 from infi.systray import win32_adapter as systray_win32
 
-from windows_integration import extract_executable_icon
+from .windows_integration import extract_executable_icon
 
 
 LOGGER = logging.getLogger(__name__)

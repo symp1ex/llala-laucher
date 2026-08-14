@@ -16,8 +16,8 @@ from urllib import error, request
 REPOSITORY = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(REPOSITORY))
 
-from llama_server import build_command, default_parameter_state  # noqa: E402
-from web_search_settings import WebSearchSettings  # noqa: E402
+from internal.llama_server import build_command, default_parameter_state  # noqa: E402
+from internal.web_search_settings import WebSearchSettings  # noqa: E402
 
 
 class MockSearXNG(BaseHTTPRequestHandler):

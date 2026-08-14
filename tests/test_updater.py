@@ -8,9 +8,9 @@ import threading
 import unittest
 from unittest.mock import Mock, patch
 
-from app import LauncherApp
-from app_paths import AppPaths, resolve_app_paths
-from updater import (
+from internal.app import LauncherApp
+from internal.app_paths import AppPaths, resolve_app_paths
+from internal.updater import (
     CheckResult,
     InstallResult,
     UpdateState,
@@ -82,7 +82,7 @@ class UpdaterServiceTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as temporary:
             paths = make_updater_paths(Path(temporary))
             completed = subprocess.CompletedProcess([], 0, stdout="false", stderr="")
-            with patch("updater.subprocess.run", return_value=completed) as run:
+            with patch("internal.updater.subprocess.run", return_value=completed) as run:
                 result = UpdaterService(paths).check()
 
             self.assertEqual(result, CheckResult(True, update_available=False))
@@ -113,7 +113,7 @@ class UpdaterServiceTests(unittest.TestCase):
 
             service = UpdaterService(paths)
             first_result: list[CheckResult] = []
-            with patch("updater.subprocess.run", side_effect=run_process):
+            with patch("internal.updater.subprocess.run", side_effect=run_process):
                 worker = threading.Thread(target=lambda: first_result.append(service.check()))
                 worker.start()
                 self.assertTrue(started.wait(timeout=2))
@@ -130,7 +130,7 @@ class UpdaterServiceTests(unittest.TestCase):
             paths = make_updater_paths(Path(temporary))
             service = UpdaterService(paths, timeout=0.01)
             with patch(
-                "updater.subprocess.run",
+                "internal.updater.subprocess.run",
                 side_effect=subprocess.TimeoutExpired(["updater-ll.exe", "--check"], 0.01),
             ):
                 result = service.check()
@@ -142,7 +142,7 @@ class UpdaterServiceTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as temporary:
             paths = make_updater_paths(Path(temporary))
             service = UpdaterService(paths)
-            with patch("updater.subprocess.run", side_effect=OSError("start failed")):
+            with patch("internal.updater.subprocess.run", side_effect=OSError("start failed")):
                 result = service.check()
 
             self.assertFalse(result.ok)
@@ -161,7 +161,7 @@ class UpdaterServiceTests(unittest.TestCase):
             paths = make_updater_paths(Path(temporary))
             process = Mock(pid=42)
             service = UpdaterService(paths, restart_command="llala-laucher.exe start")
-            with patch("updater.subprocess.Popen", return_value=process) as popen:
+            with patch("internal.updater.subprocess.Popen", return_value=process) as popen:
                 result = service.install()
 
             self.assertEqual(result, InstallResult(True, pid=42))
@@ -187,7 +187,7 @@ class UpdaterServiceTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as temporary:
             paths = make_updater_paths(Path(temporary))
             service = UpdaterService(paths, restart_command="llala-laucher.exe start")
-            with patch("updater.subprocess.Popen", side_effect=OSError("start failed")):
+            with patch("internal.updater.subprocess.Popen", side_effect=OSError("start failed")):
                 first = service.install()
                 second = service.install()
 
@@ -198,7 +198,7 @@ class UpdaterServiceTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as temporary:
             paths = make_updater_paths(Path(temporary))
             service = UpdaterService(paths, restart_command="llala-laucher.exe start")
-            with patch("updater.subprocess.Popen", return_value=Mock(pid=42)) as popen:
+            with patch("internal.updater.subprocess.Popen", return_value=Mock(pid=42)) as popen:
                 first = service.install()
                 second = service.install()
 

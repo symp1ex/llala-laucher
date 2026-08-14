@@ -6,7 +6,7 @@ import json
 from pathlib import Path
 from typing import Any, Mapping
 
-from model_scanner import ModelInfo, sanitize_windows_component
+from .model_scanner import ModelInfo, sanitize_windows_component
 
 
 SCHEMA_VERSION = 1

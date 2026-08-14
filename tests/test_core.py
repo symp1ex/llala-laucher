@@ -9,18 +9,18 @@ import time
 import unittest
 from unittest.mock import patch
 
-from app import LauncherApp
-from app_paths import resolve_app_paths
-from llama_server import (
+from internal.app import LauncherApp
+from internal.app_paths import resolve_app_paths
+from internal.llama_server import (
     build_command,
     build_server_url,
     default_parameter_state,
     detect_supported_parameters,
 )
-from model_scanner import ModelInfo, ModelScanner, model_id_for_relative
-from parameter_specs import PARAMETER_SPECS, SPEC_BY_KEY
-from preset_manager import PresetManager
-from server_process import LlamaServerProcess
+from internal.model_scanner import ModelInfo, ModelScanner, model_id_for_relative
+from internal.parameter_specs import PARAMETER_SPECS, SPEC_BY_KEY
+from internal.preset_manager import PresetManager
+from internal.server_process import LlamaServerProcess
 
 
 class ParameterSpecTests(unittest.TestCase):
@@ -297,7 +297,7 @@ class CommandTests(unittest.TestCase):
             server = Path(temporary) / "llama-server.exe"
             server.touch()
             help_text = "--temp --top-p --top-k --repeat-penalty"
-            with patch("llama_server.subprocess.run") as run:
+            with patch("internal.llama_server.subprocess.run") as run:
                 run.return_value.stdout = help_text
                 result = detect_supported_parameters(server)
 

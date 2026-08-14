@@ -6,7 +6,7 @@ import tkinter as tk
 from tkinter import ttk
 from typing import Any, Callable
 
-from parameter_specs import ParameterSpec
+from .parameter_specs import ParameterSpec
 
 
 class Tooltip:

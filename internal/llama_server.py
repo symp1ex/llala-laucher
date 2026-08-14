@@ -10,8 +10,8 @@ import re
 import subprocess
 from typing import Any, Mapping, Sequence
 
-from parameter_specs import PARAMETER_SPECS, ParameterSpec
-from web_search_settings import WebSearchSettings, WebSearchSettingsError, validate_web_search_settings
+from .parameter_specs import PARAMETER_SPECS, ParameterSpec
+from .web_search_settings import WebSearchSettings, WebSearchSettingsError, validate_web_search_settings
 
 
 class CommandValidationError(ValueError):

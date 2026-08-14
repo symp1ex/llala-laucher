@@ -11,7 +11,7 @@ import subprocess
 import sys
 import threading
 
-from app_paths import AppPaths
+from .app_paths import AppPaths
 
 
 LOGGER = logging.getLogger(__name__)
