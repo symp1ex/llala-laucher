@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from copy import deepcopy
 from dataclasses import dataclass
 import json
 import os
@@ -10,6 +11,7 @@ import re
 import subprocess
 from typing import Any, Mapping, Sequence
 
+from .cli_inventory import option_switches, parse_help_options
 from .parameter_specs import PARAMETER_SPECS, ParameterSpec
 from .web_search_settings import WebSearchSettings, WebSearchSettingsError, validate_web_search_settings
 
@@ -24,6 +26,7 @@ class DetectionResult:
     supported_keys: frozenset[str] | None
     error: str | None = None
     supports_mcp_servers_json: bool = False
+    supported_switches: frozenset[str] | None = None
 
 
 def _switch_present(help_text: str, switch: str) -> bool:
@@ -58,13 +61,15 @@ def detect_supported_parameters(
     help_text = completed.stdout or ""
     if not help_text.strip():
         return DetectionResult("", None, "llama-server --help returned no text")
+    parsed_switches = option_switches(parse_help_options(help_text))
     supported = frozenset(
-        spec.key for spec in specs if _switch_present(help_text, spec.support_cli)
+        spec.key for spec in specs if parsed_switches.intersection(spec.all_switches)
     )
     return DetectionResult(
         help_text,
         supported,
         supports_mcp_servers_json=_switch_present(help_text, "--mcp-servers-json"),
+        supported_switches=parsed_switches,
     )
 
 
@@ -76,7 +81,7 @@ def default_parameter_state(
     return {
         spec.key: {
             "enabled": bool(spec.default_enabled) if safe_profile else False,
-            "value": spec.default,
+            "value": deepcopy(spec.default),
         }
         for spec in specs
     }
@@ -121,12 +126,76 @@ def _validated_value(spec: ParameterSpec, value: Any) -> str:
     return str(parsed)
 
 
+def _json_list(spec: ParameterSpec, value: Any) -> list[Any]:
+    parsed = value
+    if isinstance(value, str):
+        try:
+            parsed = json.loads(value)
+        except json.JSONDecodeError as exc:
+            raise CommandValidationError(f"{spec.label}: enter a JSON array") from exc
+    if not isinstance(parsed, list):
+        raise CommandValidationError(f"{spec.label}: enter a JSON array")
+    if not parsed:
+        raise CommandValidationError(f"{spec.label}: the array cannot be empty")
+    return parsed
+
+
+def _validated_argv_values(spec: ParameterSpec, value: Any) -> list[list[str]]:
+    """Return value groups; each group follows one occurrence of the switch."""
+    if spec.value_type == "string_list":
+        values = _json_list(spec, value)
+        result: list[list[str]] = []
+        for item in values:
+            if isinstance(item, (dict, list)) or not str(item):
+                raise CommandValidationError(f"{spec.label}: array items must be non-empty scalars")
+            result.append([str(item)])
+        return result
+    if spec.value_type == "int_list":
+        values = _json_list(spec, value)
+        if len(values) != spec.arity:
+            raise CommandValidationError(
+                f"{spec.label}: expected {spec.arity} array items, got {len(values)}"
+            )
+        converted: list[str] = []
+        for item in values:
+            try:
+                converted.append(str(int(str(item).strip())))
+            except (TypeError, ValueError) as exc:
+                raise CommandValidationError(
+                    f"{spec.label}: every array item must be a whole number"
+                ) from exc
+        return [converted]
+    return [[_validated_value(spec, value)]]
+
+
+def _toggle_is_positive(spec: ParameterSpec, value: Any) -> bool:
+    if isinstance(value, bool):
+        return value
+    normalized = str(value).strip().casefold()
+    if normalized in {"on", "true", "1", "yes"}:
+        return True
+    if normalized in {"off", "false", "0", "no"}:
+        return False
+    raise CommandValidationError(f"{spec.label}: choose on or off")
+
+
+def _available_switch(
+    candidates: Sequence[str], supported_switches: frozenset[str] | set[str] | None
+) -> str | None:
+    if not candidates:
+        return None
+    if supported_switches is None:
+        return candidates[0]
+    return next((switch for switch in candidates if switch in supported_switches), None)
+
+
 def build_command(
     server_path: Path,
     model_path: Path,
     parameter_state: Mapping[str, Mapping[str, Any]],
     specs: Sequence[ParameterSpec] = PARAMETER_SPECS,
     supported_keys: frozenset[str] | set[str] | None = None,
+    supported_switches: frozenset[str] | set[str] | None = None,
     *,
     web_search: WebSearchSettings | None = None,
     web_mcp_path: Path | None = None,
@@ -145,10 +214,23 @@ def build_command(
             continue
         if supported_keys is not None and spec.key not in supported_keys:
             continue
-        if spec.value_type == "bool":
-            command.append(spec.cli)
+        if spec.value_type == "toggle":
+            positive = _toggle_is_positive(spec, state.get("value", spec.default))
+            candidates = spec.positive_switches if positive else spec.negative_switches
+            switch = _available_switch(candidates, supported_switches)
+            if switch is not None:
+                command.append(switch)
             continue
-        command.extend((spec.cli, _validated_value(spec, state.get("value", spec.default))))
+        switch = _available_switch(spec.positive_switches, supported_switches)
+        if switch is None:
+            continue
+        if spec.value_type == "bool":
+            command.append(switch)
+            continue
+        groups = _validated_argv_values(spec, state.get("value", spec.default))
+        for group in groups:
+            command.append(switch)
+            command.extend(group)
     if web_search is not None and web_search.enabled:
         if not supports_mcp_servers_json:
             raise CommandValidationError(
@@ -219,7 +301,17 @@ def format_windows_command(command: Sequence[str]) -> str:
     """Format argv for a readable Windows preview; never used for execution."""
     if not command:
         return ""
-    quoted = [subprocess.list2cmdline([part]) for part in command]
+    secret_switches = {
+        switch
+        for spec in PARAMETER_SPECS
+        if spec.value_type == "secret"
+        for switch in spec.all_switches
+    } | {"--mcp-servers-json"}
+    display = list(command)
+    for index, part in enumerate(display[:-1]):
+        if part in secret_switches:
+            display[index + 1] = "<redacted>"
+    quoted = [subprocess.list2cmdline([part]) for part in display]
     return " ^\n  ".join(quoted)
 
 

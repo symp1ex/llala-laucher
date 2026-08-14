@@ -1,0 +1,251 @@
+----- common params -----
+-h, --help, --usage
+--version
+-cl, --cache-list
+--completion-bash
+-t, --threads N
+-tb, --threads-batch N
+-C, --cpu-mask M
+-Cr, --cpu-range lo-hi
+--cpu-strict <0|1>
+--prio N
+--poll <0...100>
+-Cb, --cpu-mask-batch M
+-Crb, --cpu-range-batch lo-hi
+--cpu-strict-batch <0|1>
+--prio-batch N
+--poll-batch <0|1>
+-c, --ctx-size N
+-n, --predict, --n-predict N
+-b, --batch-size N
+-ub, --ubatch-size N
+--keep N
+--swa-full
+-fa, --flash-attn [on|off|auto]
+--perf, --no-perf
+-e, --escape, --no-escape
+--rope-scaling {none,linear,yarn}
+--rope-scale N
+--rope-freq-base N
+--rope-freq-scale N
+--yarn-orig-ctx N
+--yarn-ext-factor N
+--yarn-attn-factor N
+--yarn-beta-slow N
+--yarn-beta-fast N
+-kvo, --kv-offload, -nkvo, --no-kv-offload
+--repack, -nr, --no-repack
+--no-host
+-ctk, --cache-type-k TYPE
+-ctv, --cache-type-v TYPE
+-dt, --defrag-thold N
+--rpc SERVERS
+--mlock
+--mmap, --no-mmap
+-dio, --direct-io, -ndio, --no-direct-io
+-lm, --load-mode MODE
+--numa TYPE
+-dev, --device DEVICES
+--list-devices
+-ot, --override-tensor OVERRIDES
+-cmoe, --cpu-moe
+-ncmoe, --n-cpu-moe N
+-ngl, --gpu-layers, --n-gpu-layers N
+-sm, --split-mode MODE
+-ts, --tensor-split VALUES
+-mg, --main-gpu INDEX
+-fit, --fit [on|off]
+-fitt, --fit-target VALUES
+-fitc, --fit-ctx N
+--check-tensors
+--override-kv VALUES
+--op-offload, --no-op-offload
+--lora FNAME
+--lora-scaled VALUES
+--control-vector FNAME
+--control-vector-scaled VALUES
+--control-vector-layer-range START END
+-m, --model FNAME
+-mu, --model-url URL
+-dr, --docker-repo REPO
+-hf, -hfr, --hf-repo REPO
+-hff, --hf-file FILE
+-hft, --hf-token TOKEN
+--log-disable
+--log-file FNAME
+--log-colors [on|off|auto]
+-v, --verbose, --log-verbose
+--offline
+-lv, --verbosity, --log-verbosity N
+--log-prefix, --no-log-prefix
+--log-timestamps, --no-log-timestamps
+--spec-draft-type-k, -ctkd, --cache-type-k-draft TYPE
+--spec-draft-type-v, -ctvd, --cache-type-v-draft TYPE
+----- sampling params -----
+--samplers SAMPLERS
+-s, --seed SEED
+--sampler-seq, --sampling-seq SEQUENCE
+--ignore-eos
+--temp, --temperature N
+--top-k N
+--top-p N
+--min-p N
+--top-nsigma, --top-n-sigma N
+--xtc-probability N
+--xtc-threshold N
+--typical, --typical-p N
+--repeat-last-n N
+--repeat-penalty N
+--presence-penalty N
+--frequency-penalty N
+--dry-multiplier N
+--dry-base N
+--dry-allowed-length N
+--dry-penalty-last-n N
+--dry-sequence-breaker STRING
+--adaptive-target N
+--adaptive-decay N
+--dynatemp-range N
+--dynatemp-exp N
+--mirostat N
+--mirostat-lr N
+--mirostat-ent N
+-l, --logit-bias VALUE
+--grammar GRAMMAR
+--grammar-file FNAME
+-j, --json-schema SCHEMA
+-jf, --json-schema-file FILE
+-bs, --backend-sampling
+----- speculative params -----
+--spec-draft-hf, -hfd, -hfrd, --hf-repo-draft REPO
+--spec-draft-threads, -td, --threads-draft N
+--spec-draft-threads-batch, -tbd, --threads-batch-draft N
+--spec-draft-cpu-mask, -Cd, --cpu-mask-draft M
+--spec-draft-cpu-range, -Crd, --cpu-range-draft RANGE
+--spec-draft-cpu-strict, --cpu-strict-draft <0|1>
+--spec-draft-prio, --prio-draft N
+--spec-draft-poll, --poll-draft <0|1>
+--spec-draft-cpu-mask-batch, -Cbd, --cpu-mask-batch-draft M
+--spec-draft-cpu-strict-batch, --cpu-strict-batch-draft <0|1>
+--spec-draft-prio-batch, --prio-batch-draft N
+--spec-draft-poll-batch, --poll-batch-draft <0|1>
+--spec-draft-override-tensor, -otd, --override-tensor-draft VALUE
+--spec-draft-cpu-moe, -cmoed, --cpu-moe-draft
+--spec-draft-n-cpu-moe, --spec-draft-ncmoe, -ncmoed, --n-cpu-moe-draft N
+--spec-draft-n-max N
+--spec-draft-n-min N
+--spec-draft-p-split, --draft-p-split P
+--spec-draft-p-min, --draft-p-min P
+--spec-draft-backend-sampling, --no-spec-draft-backend-sampling
+--spec-draft-device, -devd, --device-draft DEVICES
+--spec-draft-ngl, -ngld, --gpu-layers-draft, --n-gpu-layers-draft N
+--spec-draft-model, -md, --model-draft FNAME
+--spec-type TYPES
+--spec-ngram-mod-n-min N
+--spec-ngram-mod-n-max N
+--spec-ngram-mod-n-match N
+--spec-ngram-simple-size-n N
+--spec-ngram-simple-size-m N
+--spec-ngram-simple-min-hits N
+--spec-ngram-map-k-size-n N
+--spec-ngram-map-k-size-m N
+--spec-ngram-map-k-min-hits N
+--spec-ngram-map-k4v-size-n N
+--spec-ngram-map-k4v-size-m N
+--spec-ngram-map-k4v-min-hits N
+--draft, --draft-n, --draft-max N
+--draft-min, --draft-n-min N
+--spec-ngram-size-n N
+--spec-ngram-size-m N
+--spec-ngram-min-hits N
+----- example-specific params -----
+-lcs, --lookup-cache-static FNAME
+-lcd, --lookup-cache-dynamic FNAME
+-ctxcp, --ctx-checkpoints, --swa-checkpoints N
+-cms, --checkpoint-min-step N
+-cram, --cache-ram N
+-kvu, --kv-unified, -no-kvu, --no-kv-unified
+--cache-idle-slots, --no-cache-idle-slots
+--context-shift, --no-context-shift
+-r, --reverse-prompt PROMPT
+-sp, --special
+--warmup, --no-warmup
+--spm-infill
+--pooling MODE
+-np, --parallel N
+-cb, --cont-batching, -nocb, --no-cont-batching
+-mm, --mmproj FILE
+-mmu, --mmproj-url URL
+--mmproj-auto, --no-mmproj, --no-mmproj-auto
+--mmproj-offload, --no-mmproj-offload
+--image-min-tokens N
+--image-max-tokens N
+--mtmd-batch-max-tokens N
+-a, --alias STRING
+--tags STRING
+--embd-normalize N
+--host HOST
+--port PORT
+--reuse-port
+--path PATH
+--cors-origins ORIGINS
+--cors-methods METHODS
+--cors-headers HEADERS
+--cors-credentials, --no-cors-credentials
+--api-prefix PREFIX
+--ui-config, --webui-config JSON
+--ui-config-file, --webui-config-file PATH
+--ui-mcp-proxy, --webui-mcp-proxy, --no-ui-mcp-proxy, --no-webui-mcp-proxy
+--tools TOOLS
+--tools-runtime OPTION
+--mcp-servers-config PATH
+--mcp-servers-json JSON
+-ag, --agent, -no-ag, --no-agent
+--ui, --webui, --no-ui, --no-webui
+--embedding, --embeddings
+--rerank, --reranking
+--api-key KEY
+--api-key-file FNAME
+--ssl-key-file FNAME
+--ssl-cert-file FNAME
+--chat-template-kwargs STRING
+-to, --timeout N
+--sse-ping-interval N
+--threads-http N
+--cache-prompt, --no-cache-prompt
+--cache-reuse N
+--metrics
+--props
+--slots, --no-slots
+--slot-save-path PATH
+--media-path PATH
+--models-dir PATH
+--models-preset PATH
+--models-max N
+--models-autoload, --no-models-autoload
+--jinja, --no-jinja
+--reasoning-format FORMAT
+-rea, --reasoning [on|off|auto]
+--reasoning-budget N
+--reasoning-budget-message MESSAGE
+--reasoning-preserve, --no-reasoning-preserve
+--chat-template TEMPLATE
+--chat-template-file FILE
+--skip-chat-parsing, --no-skip-chat-parsing
+--prefill-assistant, --no-prefill-assistant
+-sps, --slot-prompt-similarity N
+--lora-init-without-apply
+--sleep-idle-seconds SECONDS
+--log-prompts-dir PATH
+--embd-gemma-default
+--fim-qwen-1.5b-default
+--fim-qwen-3b-default
+--fim-qwen-7b-default
+--fim-qwen-7b-spec
+--fim-qwen-14b-spec
+--fim-qwen-30b-default
+--gpt-oss-20b-default
+--gpt-oss-120b-default
+--vision-gemma-4b-default
+--vision-gemma-12b-default
+--spec-default

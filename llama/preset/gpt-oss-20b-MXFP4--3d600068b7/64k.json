@@ -1,0 +1,189 @@
+{
+  "schema_version": 1,
+  "name": "64k",
+  "model": {
+    "relative_path": "gpt-oss-20b-MXFP4.gguf"
+  },
+  "parameters": {
+    "alias": {
+      "enabled": true,
+      "value": "gpt-oss-20b"
+    },
+    "host": {
+      "enabled": true,
+      "value": "127.0.0.1"
+    },
+    "port": {
+      "enabled": true,
+      "value": 8080
+    },
+    "ctx_size": {
+      "enabled": true,
+      "value": 64000
+    },
+    "parallel": {
+      "enabled": true,
+      "value": 1
+    },
+    "flash_attn": {
+      "enabled": true,
+      "value": "on"
+    },
+    "cache_type_k": {
+      "enabled": false,
+      "value": "f16"
+    },
+    "cache_type_v": {
+      "enabled": false,
+      "value": "f16"
+    },
+    "jinja": {
+      "enabled": true,
+      "value": true
+    },
+    "n_predict": {
+      "enabled": false,
+      "value": -1
+    },
+    "threads": {
+      "enabled": false,
+      "value": -1
+    },
+    "threads_batch": {
+      "enabled": false,
+      "value": -1
+    },
+    "batch_size": {
+      "enabled": false,
+      "value": 2048
+    },
+    "ubatch_size": {
+      "enabled": false,
+      "value": 512
+    },
+    "priority": {
+      "enabled": false,
+      "value": "0"
+    },
+    "poll": {
+      "enabled": false,
+      "value": 50
+    },
+    "gpu_layers": {
+      "enabled": false,
+      "value": "auto"
+    },
+    "device": {
+      "enabled": false,
+      "value": ""
+    },
+    "main_gpu": {
+      "enabled": false,
+      "value": 0
+    },
+    "split_mode": {
+      "enabled": false,
+      "value": "layer"
+    },
+    "tensor_split": {
+      "enabled": false,
+      "value": ""
+    },
+    "load_mode": {
+      "enabled": false,
+      "value": "mmap"
+    },
+    "fit": {
+      "enabled": true,
+      "value": "on"
+    },
+    "temperature": {
+      "enabled": true,
+      "value": 0.3
+    },
+    "top_p": {
+      "enabled": true,
+      "value": 1.0
+    },
+    "top_k": {
+      "enabled": false,
+      "value": 40
+    },
+    "min_p": {
+      "enabled": false,
+      "value": 0.05
+    },
+    "repeat_penalty": {
+      "enabled": false,
+      "value": 1.0
+    },
+    "no_mmap": {
+      "enabled": false,
+      "value": true
+    },
+    "mlock": {
+      "enabled": false,
+      "value": true
+    },
+    "numa": {
+      "enabled": false,
+      "value": "distribute"
+    },
+    "cpu_moe": {
+      "enabled": false,
+      "value": true
+    },
+    "n_cpu_moe": {
+      "enabled": false,
+      "value": 0
+    },
+    "override_tensor": {
+      "enabled": false,
+      "value": ""
+    },
+    "api_key": {
+      "enabled": false,
+      "value": ""
+    },
+    "timeout": {
+      "enabled": false,
+      "value": 3600
+    },
+    "threads_http": {
+      "enabled": false,
+      "value": -1
+    },
+    "metrics": {
+      "enabled": false,
+      "value": true
+    },
+    "cache_prompt": {
+      "enabled": false,
+      "value": true
+    },
+    "rope_scaling": {
+      "enabled": false,
+      "value": "linear"
+    },
+    "rope_scale": {
+      "enabled": false,
+      "value": 1.0
+    },
+    "swa_full": {
+      "enabled": false,
+      "value": true
+    },
+    "no_kv_offload": {
+      "enabled": false,
+      "value": true
+    },
+    "check_tensors": {
+      "enabled": false,
+      "value": true
+    },
+    "log_verbosity": {
+      "enabled": false,
+      "value": 3
+    }
+  }
+}

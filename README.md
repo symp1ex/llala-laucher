@@ -1,5 +1,59 @@
 # llala-laucher
 
+## Текущая версия llama.cpp и полнота CLI
+
+В каталоге `llama/` используется официальная Windows CUDA 12.4 сборка
+**llama.cpp b10427**, commit
+`65091386227039bfb81ee3426537656e3b4a3f83` (`llama-server --version`:
+`0.1.0-dev`, Clang 20.1.8, Windows x86_64). `llama-server.exe`, `llama.dll`,
+`ggml*.dll`, `mtmd.dll` и остальные implementation DLL относятся к одному
+build; пользовательские `llama/models/` и `llama/preset/` при обновлении не
+заменяются.
+
+Каталог `internal/parameter_specs.py` покрывает весь configuration/runtime CLI
+этой версии: 247 групп options (404 switch/alias) из фактического `--help`, из
+них 235 представлены декларативными `ParameterSpec`. Категории UI: General,
+Sampling, Performance, Memory/GPU, Context/KV, MoE, Models/Adapters,
+Speculative, Multimodal, Server/API, Templates/Reasoning и Advanced (включая
+logging). Toggle-пары, options с несколькими argv-значениями и
+repeatable options описываются метаданными спецификации; repeatable значения в
+UI/preset задаются JSON-массивом и превращаются в отдельные повторения switch.
+
+Оставшиеся 12 групп не скрыты allowlist'ом:
+
+- `-m/--model` формируется выбором модели launcher, а
+  `--mcp-servers-json` — существующей интеграцией Web Search/MCP;
+- `--help/--usage`, `--version`, `--cache-list`, `--completion-bash` и
+  `--list-devices` являются action/meta-командами, завершающими процесс;
+- пять деклараций старых speculative options оставлены upstream только для
+  сообщения об удалении и явно классифицированы как removed.
+
+При **Recheck CLI** aliases разбираются группами. Для подменённого старого
+бинарника launcher выбирает доступный вариант switch; отсутствующие controls
+помечаются unsupported, блокируются и не попадают в argv.
+
+Старые неполные presets нормализуются только в памяти при чтении: все известные
+ключи добавляются с `ParameterSpec.default` и `enabled=false`, поэтому новые
+options не меняют старый argv. Пропущенные поля получают безопасные defaults,
+повреждённая отдельная запись даёт warning вместо fatal error. Неизвестные
+future-version ключи сохраняются в документе и переживают overwrite/Save.
+Файл физически переписывается в полном нормализованном формате только по явной
+команде **Save preset**.
+
+Машинный audit находится в `internal/cli_inventory.py`. Snapshot фактических
+declarations хранится в
+`tests/fixtures/llama-server-b10427-help-options.txt`; тест сравнивает с ним
+локальный EXE (когда он присутствует) и вычисляет:
+
+```text
+actual option groups
+- ParameterSpec groups
+- launcher-managed groups
+- action/meta groups
+- removed upstream groups
+= empty set
+```
+
 `llala-laucher` — автономный Windows GUI на Python 3.13 и `tkinter` для настройки, запуска и остановки `llama-server.exe` из llama.cpp. Для системного tray используется небольшой Windows-пакет `infi.systray`.
 
 ## Требования и структура
@@ -59,7 +113,7 @@ llala-laucher/
 На этапе разработки в `internal/app_paths.py` задан временный fallback:
 
 ```text
-F:\itt\llama\llama-b10282-bin-win-cuda-13.3-x64
+F:\itt\llala-laucher\llama
 ```
 
 Если локальный `llama/llama-server.exe` существует, он всегда имеет приоритет. После копирования сборки в локальный `llama/` удалите значение `DEVELOPMENT_LLAMA_ROOT` (установите `None`). При активном fallback каталоги `models` и `preset` также берутся из fallback-корня.
@@ -289,7 +343,7 @@ Preset автоматически применяется к полям UI сра
 
 Checkbox **Start using selected preset** по-прежнему означает, что команда строится непосредственно из JSON выбранного preset, а не из текущих полей UI. В этом режиме необходим существующий выбранный preset. Состояние checkbox сохраняется launcher'ом в `laucher-settings.json` и восстанавливается при следующем запуске.
 
-**Save preset** записывает все параметры как `{ "enabled": ..., "value": ... }` в schema version 1. Неизвестные параметры будущих версий при загрузке игнорируются с предупреждением в Server output. API key входит в preset только при явном сохранении пользователем; в `laucher-settings.json` он никогда не записывается.
+**Save preset** записывает все известные параметры как `{ "enabled": ..., "value": ... }` в schema version 1. При чтении неполный preset дополняется только in-memory; отсутствующие параметры получают default и `enabled=false`. Неизвестные параметры будущих версий сохраняются с предупреждением и переживают повторный Save/overwrite. API key входит в preset только при явном сохранении пользователем; в `laucher-settings.json` он никогда не записывается.
 
 Пример `original-bat.json` находится в:
 
@@ -301,7 +355,7 @@ llama/preset/Qwen3.6-35B-A3B-Q4_K_M--f6b98dc27b/original-bat.json
 
 При старте и по кнопке **Recheck CLI** launcher выполняет `llama-server.exe --help`. Известные switches ищутся как отдельные имена. Неподдерживаемый параметр остается видимым с пометкой, блокируется и не попадает в argv. Если `--help` прочитать нельзя, используется встроенный декларативный каталог из `internal/parameter_specs.py`.
 
-Вкладка **MoE** использует реально подтвержденные сборкой llama.cpp b10282 параметры:
+Вкладка **MoE** использует реально подтвержденные сборкой llama.cpp b10427 параметры:
 
 - `--cpu-moe` оставляет все веса экспертов в RAM и экономит VRAM, обычно ценой скорости;
 - `--n-cpu-moe N` оставляет на CPU экспертов первых N слоев;
@@ -327,4 +381,4 @@ go test ./...
 go vet ./...
 ```
 
-Тесты покрывают пустой каталог моделей, рекурсивный scan, model ID, preset round-trip, отсутствие EXE, исключение disabled/unsupported аргументов, эквивалентность `original-bat.json` исходному BAT, queue-only tray callbacks, X/Open/Quit lifecycle, идемпотентный Quit, ожидание server `exit`, повторный `NIM_ADD` и source/frozen icon resolution.
+Тесты покрывают пустой каталог моделей, рекурсивный scan, model ID, preset round-trip и normalization, сохранение unknown future keys, отсутствие EXE, исключение disabled/unsupported аргументов, bool/toggle/multi-token/repeatable serialization, эквивалентность `original-bat.json` исходному BAT, snapshot и live completeness audit CLI, queue-only tray callbacks, X/Open/Quit lifecycle, идемпотентный Quit, ожидание server `exit`, повторный `NIM_ADD` и source/frozen icon resolution.

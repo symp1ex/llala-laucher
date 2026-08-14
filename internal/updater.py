@@ -65,6 +65,8 @@ def _build_upgrade_args_for_command(restart_command: str) -> list[str]:
 
 
 def resolve_restart_command(base_dir: Path) -> str:
+    if getattr(sys, "frozen", False):
+        return f"{Path(sys.executable).name} start"
     command = f'cd /d "{base_dir.resolve()}" && llala-laucher.exe start'
     return command
 
@@ -77,9 +79,10 @@ class UpdaterService:
         paths: AppPaths,
         *,
         timeout: float = CHECK_TIMEOUT_SECONDS,
+        restart_command: str | None = None,
     ) -> None:
         self.paths = paths
-        self.restart_command = resolve_restart_command(paths.base_dir)
+        self.restart_command = restart_command or resolve_restart_command(paths.base_dir)
         self.timeout = timeout
         self._state_lock = threading.Lock()
         self._checking = False

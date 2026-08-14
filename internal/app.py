@@ -28,7 +28,7 @@ from .llama_server import (
 )
 from .model_scanner import ModelInfo, ModelScanner
 from .parameter_specs import CATEGORIES, PARAMETER_SPECS, SPEC_BY_KEY
-from .preset_manager import PresetError, PresetManager
+from .preset_manager import PresetError, PresetManager, normalize_preset_parameters
 from .server_process import LlamaServerProcess
 from .tray import TrayController
 from .updater import CheckResult, InstallResult, UpdateState, UpdaterService
@@ -56,7 +56,7 @@ class LauncherApp:
     PREVIEW_DELAY_MS = 250
     UPDATE_SHUTDOWN_DELAY_MS = 2_000
     # Vista ttk: old preset buttons used 76 + 5 + 76 px; the shared new column uses 91 px.
-    WINDOW_OUTER_WIDTH = 834
+    WINDOW_OUTER_WIDTH = 950
     WINDOW_OUTER_HEIGHT = 940
 
     _UPDATE_TRANSITIONS = {
@@ -85,6 +85,7 @@ class LauncherApp:
         self.presets_by_display: dict[str, Path] = {}
         self.parameter_controls: dict[str, ParameterControl] = {}
         self.supported_keys: frozenset[str] | None = None
+        self.supported_switches: frozenset[str] | None = None
         self.supports_mcp_servers_json = False
         self.preview_after_id: str | None = None
         self.closing = False
@@ -484,19 +485,10 @@ class LauncherApp:
     ) -> tuple[dict[str, dict[str, Any]], list[str], dict[str, Any]]:
         document = self.preset_manager.load(path)
         raw_parameters = document["parameters"]
-        state = default_parameter_state(safe_profile=False)
-        warnings: list[str] = []
-        for key, raw_state in raw_parameters.items():
-            if key not in SPEC_BY_KEY:
-                warnings.append(f"Unknown preset parameter ignored: {key}")
-                continue
-            if not isinstance(raw_state, Mapping):
-                warnings.append(f"Malformed preset parameter ignored: {key}")
-                continue
-            state[key] = {
-                "enabled": bool(raw_state.get("enabled", False)),
-                "value": raw_state.get("value", SPEC_BY_KEY[key].default),
-            }
+        normalized, warnings = normalize_preset_parameters(raw_parameters)
+        state = {key: normalized[key] for key in SPEC_BY_KEY}
+        document = dict(document)
+        document["parameters"] = normalized
         return state, warnings, document
 
     def _state_for_command(self) -> tuple[dict[str, dict[str, Any]], list[str]]:
@@ -556,8 +548,28 @@ class LauncherApp:
             "Overwrite preset", f"'{target.name}' already exists. Overwrite it?", parent=self.root
         ):
             return
+        preserved_parameters: dict[str, Any] = {}
+        if hasattr(self, "presets_by_display"):
+            source = self._selected_preset()
+            if source is not None and source.is_file():
+                try:
+                    source_document = self.preset_manager.load(source)
+                    source_parameters = source_document.get("parameters", {})
+                    if isinstance(source_parameters, Mapping):
+                        preserved_parameters = {
+                            key: value
+                            for key, value in source_parameters.items()
+                            if key not in SPEC_BY_KEY
+                        }
+                except PresetError:
+                    pass
         try:
-            saved = self.preset_manager.save(model, name, self._current_parameter_state())
+            saved = self.preset_manager.save(
+                model,
+                name,
+                self._current_parameter_state(),
+                preserved_parameters=preserved_parameters,
+            )
         except PresetError as exc:
             messagebox.showerror("Could not save preset", str(exc))
             return
@@ -718,6 +730,7 @@ class LauncherApp:
     def _start_capability_detection(self) -> None:
         if not self.paths.server.is_file():
             self.supported_keys = None
+            self.supported_switches = None
             self.supports_mcp_servers_json = False
             self._apply_supported_state()
             self._update_buttons()
@@ -756,6 +769,7 @@ class LauncherApp:
                     model.path,
                     state,
                     supported_keys=self.supported_keys,
+                    supported_switches=getattr(self, "supported_switches", None),
                     web_search=self.web_search_settings,
                     web_mcp_path=self.paths.web_mcp,
                     supports_mcp_servers_json=self.supports_mcp_servers_json,
@@ -793,6 +807,7 @@ class LauncherApp:
                 model.path,
                 state,
                 supported_keys=self.supported_keys,
+                supported_switches=getattr(self, "supported_switches", None),
                 web_search=self.web_search_settings,
                 web_mcp_path=self.paths.web_mcp,
                 supports_mcp_servers_json=self.supports_mcp_servers_json,
@@ -948,6 +963,7 @@ class LauncherApp:
         result = value if isinstance(value, DetectionResult) else DetectionResult("", None, "Invalid result")
         self.detect_button.configure(state="normal")
         self.supported_keys = result.supported_keys
+        self.supported_switches = result.supported_switches
         self.supports_mcp_servers_json = result.supports_mcp_servers_json
         self._apply_supported_state()
         if result.error:

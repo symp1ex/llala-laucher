@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 import tkinter as tk
 from tkinter import ttk
 from typing import Any, Callable
@@ -128,7 +129,7 @@ class ParameterControl:
 
     def _make_value_widget(self, parent: ttk.Frame) -> ttk.Widget:
         spec = self.spec
-        if spec.value_type == "choice":
+        if spec.value_type in {"choice", "toggle"}:
             return ttk.Combobox(parent, textvariable=self.value_var, values=spec.choices, state="readonly")
         if spec.value_type == "int_or_choice":
             return ttk.Combobox(parent, textvariable=self.value_var, values=spec.choices)
@@ -158,7 +159,7 @@ class ParameterControl:
         if self.value_widget is None:
             return
         enabled = self.supported and self.enabled_var.get()
-        if isinstance(self.value_widget, ttk.Combobox) and self.spec.value_type == "choice":
+        if isinstance(self.value_widget, ttk.Combobox) and self.spec.value_type in {"choice", "toggle"}:
             self.value_widget.configure(state="readonly" if enabled else "disabled")
         else:
             self.value_widget.configure(state="normal" if enabled else "disabled")
@@ -177,6 +178,10 @@ class ParameterControl:
                 value = int(value)
             elif self.spec.value_type == "float":
                 value = float(value)
+            elif self.spec.value_type in {"string_list", "int_list"}:
+                parsed = json.loads(str(value))
+                if isinstance(parsed, list):
+                    value = parsed
         except (TypeError, ValueError):
             pass
         return {"enabled": self.enabled_var.get(), "value": value}
@@ -184,5 +189,10 @@ class ParameterControl:
     def set_state(self, state: dict[str, Any]) -> None:
         self.enabled_var.set(bool(state.get("enabled", False)))
         if self.spec.value_type != "bool":
-            self.value_var.set(str(state.get("value", self.spec.default)))
+            value = state.get("value", self.spec.default)
+            if self.spec.value_type == "toggle" and isinstance(value, bool):
+                value = "on" if value else "off"
+            if self.spec.value_type in {"string_list", "int_list"} and isinstance(value, list):
+                value = json.dumps(value, ensure_ascii=False)
+            self.value_var.set(str(value))
         self._update_widget_state()

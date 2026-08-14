@@ -22,6 +22,12 @@ __pycache__/
 logs/
 date/
 llama/
+!llama/
+llama/*
+!llama/preset/
+llama/preset/*
+!llama/preset/**/
+!llama/preset/**/*.json
 updater/
 bin/
 _problems/
@@ -33,4 +39,5 @@ AGENTS.md
 uuid
 ad
 main-temp.py
+!tests/fixtures/*.txt
 .dll

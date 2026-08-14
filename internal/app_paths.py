@@ -9,7 +9,7 @@ from pathlib import Path
 # Temporary development fallback. Remove this value after copying llama.cpp into
 # <launcher>/llama. The local directory always wins when it contains the server.
 DEVELOPMENT_LLAMA_ROOT: Path | None = Path(
-    r"D:\\itt\\llala-laucher\\llama"
+    r"F:\\itt\\llala-laucher\\llama"
 )
 
 

@@ -2,11 +2,13 @@
 
 from __future__ import annotations
 
+from copy import deepcopy
 import json
 from pathlib import Path
 from typing import Any, Mapping
 
 from .model_scanner import ModelInfo, sanitize_windows_component
+from .parameter_specs import PARAMETER_SPECS, ParameterSpec
 
 
 SCHEMA_VERSION = 1
@@ -14,6 +16,43 @@ SCHEMA_VERSION = 1
 
 class PresetError(ValueError):
     pass
+
+
+def normalize_preset_parameters(
+    parameters: Mapping[str, Any],
+    specs: tuple[ParameterSpec, ...] = PARAMETER_SPECS,
+) -> tuple[dict[str, Any], list[str]]:
+    """Normalize known entries while retaining unknown future-version data."""
+    known = {spec.key: spec for spec in specs}
+    normalized: dict[str, Any] = {}
+    warnings: list[str] = []
+
+    for spec in specs:
+        if spec.key not in parameters:
+            # Presets historically represented only explicit choices. Missing
+            # entries must therefore stay disabled, even for safe UI defaults.
+            normalized[spec.key] = {"enabled": False, "value": deepcopy(spec.default)}
+            continue
+        raw = parameters[spec.key]
+        if not isinstance(raw, Mapping):
+            warnings.append(f"Malformed preset parameter reset to default: {spec.key}")
+            normalized[spec.key] = {"enabled": False, "value": deepcopy(spec.default)}
+            continue
+        enabled = raw.get("enabled", False)
+        if not isinstance(enabled, bool):
+            warnings.append(f"Invalid enabled value reset to false: {spec.key}")
+            enabled = False
+        value = raw.get("value", deepcopy(spec.default))
+        if value is None or isinstance(value, Mapping):
+            warnings.append(f"Invalid value reset to default: {spec.key}")
+            value = deepcopy(spec.default)
+        normalized[spec.key] = {"enabled": enabled, "value": value}
+
+    for key, raw in parameters.items():
+        if key not in known:
+            normalized[key] = raw
+            warnings.append(f"Unknown preset parameter preserved: {key}")
+    return normalized, warnings
 
 
 class PresetManager:
@@ -58,19 +97,33 @@ class PresetManager:
         self,
         model: ModelInfo,
         name: str,
-        parameters: Mapping[str, Mapping[str, Any]],
+        parameters: Mapping[str, Any],
         description: str | None = None,
+        *,
+        preserved_parameters: Mapping[str, Any] | None = None,
     ) -> Path:
         target = self.path_for_name(model, name)
         target.parent.mkdir(parents=True, exist_ok=True)
+        merged: dict[str, Any] = dict(preserved_parameters or {})
+        merged.update(parameters)
+        if target.is_file():
+            try:
+                existing = self.load(target)
+                existing_parameters = existing.get("parameters", {})
+                if isinstance(existing_parameters, Mapping):
+                    known_keys = {spec.key for spec in PARAMETER_SPECS}
+                    for key, value in existing_parameters.items():
+                        if key not in known_keys and key not in merged:
+                            merged[key] = value
+            except PresetError:
+                # An explicitly confirmed overwrite may replace a damaged file.
+                pass
+        normalized, _warnings = normalize_preset_parameters(merged)
         document: dict[str, Any] = {
             "schema_version": SCHEMA_VERSION,
             "name": target.stem,
             "model": {"relative_path": model.relative_path.as_posix()},
-            "parameters": {
-                key: {"enabled": bool(value.get("enabled", False)), "value": value.get("value")}
-                for key, value in parameters.items()
-            },
+            "parameters": normalized,
         }
         if description:
             document["description"] = description
