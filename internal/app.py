@@ -55,7 +55,8 @@ LOGGER = logging.getLogger(__name__)
 class LauncherApp:
     PREVIEW_DELAY_MS = 250
     UPDATE_SHUTDOWN_DELAY_MS = 2_000
-    WINDOW_OUTER_WIDTH = 900
+    # Vista ttk: old preset buttons used 76 + 5 + 76 px; the shared new column uses 91 px.
+    WINDOW_OUTER_WIDTH = 834
     WINDOW_OUTER_HEIGHT = 940
 
     _UPDATE_TRANSITIONS = {
@@ -116,7 +117,9 @@ class LauncherApp:
         self.server_status_var = tk.StringVar()
         self.model_var = tk.StringVar()
         self.preset_var = tk.StringVar()
-        self.use_preset_var = tk.BooleanVar(value=False)
+        self.use_preset_var = tk.BooleanVar(
+            value=bool(self.settings.get("use_selected_preset", False))
+        )
         self.run_status_var = tk.StringVar(value="Status: Stopped")
         self.pid_var = tk.StringVar(value="PID: -")
         self.web_search_enabled_var = tk.BooleanVar(
@@ -126,8 +129,8 @@ class LauncherApp:
 
         self._build_ui()
         self._update_server_status()
-        self._refresh_models(initial=True)
         self._reset_parameters(safe_profile=True)
+        self._refresh_models(initial=True)
         self._start_capability_detection()
         self._update_buttons()
         self._schedule_preview()
@@ -163,12 +166,18 @@ class LauncherApp:
         ttk.Label(selection, text="Preset:").grid(row=1, column=0, sticky="w", padx=(0, 8), pady=(7, 0))
         self.preset_combo = ttk.Combobox(selection, textvariable=self.preset_var, state="readonly")
         self.preset_combo.grid(row=1, column=1, sticky="ew", pady=(7, 0))
-        self.preset_combo.bind("<<ComboboxSelected>>", lambda _event: self._schedule_preview())
-        preset_buttons = ttk.Frame(selection)
-        preset_buttons.grid(row=1, column=2, sticky="e", padx=(8, 0), pady=(7, 0))
-        ttk.Button(preset_buttons, text="Refresh", command=self._refresh_presets).pack(side="left")
-        self.load_button = ttk.Button(preset_buttons, text="Load", command=self._load_selected_preset)
-        self.load_button.pack(side="left", padx=(5, 0))
+        self.preset_combo.bind("<<ComboboxSelected>>", self._on_preset_selected)
+        ttk.Button(
+            selection,
+            text="Refresh presets",
+            command=self._refresh_presets,
+        ).grid(
+            row=1,
+            column=2,
+            sticky="ew",
+            padx=(8, 0),
+            pady=(7, 0),
+        )
 
         notebook = ttk.Notebook(outer)
         notebook.pack(fill="both", expand=True, pady=(0, 8))
@@ -222,7 +231,7 @@ class LauncherApp:
             actions,
             text="Start using selected preset",
             variable=self.use_preset_var,
-            command=self._schedule_preview,
+            command=self._on_use_preset_toggled,
         )
         use_preset.grid(row=1, column=0, columnspan=3, sticky="w", pady=(5, 0))
         Tooltip(use_preset, "Launch directly from the preset without replacing current UI values.")
@@ -373,7 +382,10 @@ class LauncherApp:
         try:
             with self.paths.settings.open("r", encoding="utf-8") as file:
                 data = json.load(file)
-            return data if isinstance(data, dict) else {}
+            if not isinstance(data, dict):
+                return {}
+            data.setdefault("use_selected_preset", False)
+            return data
         except (OSError, json.JSONDecodeError):
             return {}
 
@@ -383,6 +395,7 @@ class LauncherApp:
             "window_geometry": self.root.geometry(),
             "last_model": model.relative_path.as_posix() if model else "",
             "last_preset": self.preset_var.get(),
+            "use_selected_preset": bool(self.use_preset_var.get()),
             "web_search": getattr(
                 self,
                 "web_search_settings",
@@ -423,28 +436,35 @@ class LauncherApp:
         if not models and not initial:
             self._append_log(f"No .gguf models found under {self.paths.models}")
         self._update_buttons()
-        self._schedule_preview()
 
     def _on_model_selected(self, _event: tk.Event[Any] | None = None) -> None:
         self._refresh_presets()
         self._update_buttons()
-        self._schedule_preview()
 
     def _selected_model(self) -> ModelInfo | None:
         return self.models_by_display.get(self.model_var.get())
 
-    def _refresh_presets(self, initial: bool = False) -> None:
+    def _refresh_presets(
+        self,
+        initial: bool = False,
+        preferred: str | None = None,
+    ) -> None:
         model = self._selected_model()
-        current = self.preset_var.get()
+        current = preferred if preferred is not None else self.preset_var.get()
         wanted = current or (str(self.settings.get("last_preset", "")) if initial else "")
         paths = self.preset_manager.scan(model) if model else []
         self.presets_by_display = {path.stem: path for path in paths}
         values = list(self.presets_by_display)
         self.preset_combo.configure(values=values)
         self.preset_var.set(wanted if wanted in self.presets_by_display else (values[0] if values else ""))
-        self.load_button.configure(state="normal" if values else "disabled")
         self.save_button.configure(state="normal" if model else "disabled")
-        self._schedule_preview()
+        self._apply_selected_preset()
+        if not initial:
+            self._save_settings()
+
+    def _on_preset_selected(self, _event: tk.Event[Any] | None = None) -> None:
+        self._apply_selected_preset()
+        self._save_settings()
 
     def _selected_preset(self) -> Path | None:
         return self.presets_by_display.get(self.preset_var.get())
@@ -488,20 +508,25 @@ class LauncherApp:
         state, warnings, _document = self._preset_parameter_state(preset)
         return state, warnings
 
-    def _load_selected_preset(self) -> None:
+    def _apply_selected_preset(self) -> None:
         path = self._selected_preset()
         if path is None:
-            messagebox.showerror("Preset", "Select a preset first.")
+            self._reset_parameters(safe_profile=True)
             return
         try:
             state, warnings, document = self._preset_parameter_state(path)
         except PresetError as exc:
             messagebox.showerror("Could not load preset", str(exc))
+            self._schedule_preview()
             return
         for key, control in self.parameter_controls.items():
             control.set_state(state[key])
         self._report_preset_warnings(warnings, document)
         self._append_log(f"Loaded preset: {path}")
+        self._schedule_preview()
+
+    def _on_use_preset_toggled(self) -> None:
+        self._save_settings()
         self._schedule_preview()
 
     def _report_preset_warnings(self, warnings: list[str], document: Mapping[str, Any]) -> None:
@@ -537,9 +562,7 @@ class LauncherApp:
             messagebox.showerror("Could not save preset", str(exc))
             return
         self._append_log(f"Saved preset: {saved}")
-        self._refresh_presets()
-        self.preset_var.set(saved.stem)
-        self._schedule_preview()
+        self._refresh_presets(preferred=saved.stem)
 
     def _clear(self) -> None:
         self._reset_parameters(safe_profile=True)

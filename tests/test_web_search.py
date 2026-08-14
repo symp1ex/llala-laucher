@@ -167,6 +167,8 @@ class WebSearchSettingsTests(unittest.TestCase):
             app.root.geometry.return_value = "900x900+1+2"
             app.preset_var = Mock()
             app.preset_var.get.return_value = "preset"
+            app.use_preset_var = Mock()
+            app.use_preset_var.get.return_value = True
             app.web_search_settings = WebSearchSettings(
                 True, "http://192.168.1.50:8080", 9, 17.5
             )
@@ -183,6 +185,7 @@ class WebSearchSettingsTests(unittest.TestCase):
                     "timeout": 17.5,
                 },
             )
+            self.assertIs(document["use_selected_preset"], True)
 
     def test_production_mcp_path_is_always_next_to_launcher_root(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
